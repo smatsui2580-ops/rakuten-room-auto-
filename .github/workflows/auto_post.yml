@@ -1,0 +1,59 @@
+name: 楽天ROOM自動投稿
+
+on:
+  schedule:
+    - cron: '0 0 * * *'   # 09:00 JST
+    - cron: '0 6 * * *'   # 15:00 JST
+    - cron: '0 11 * * *'  # 20:00 JST
+  workflow_dispatch:       # 手動実行ボタン
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 依存パッケージをインストール
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: ログ・データフォルダを作成
+        run: mkdir -p logs data
+
+      - name: クッキーを復元
+        env:
+          RAKUTEN_COOKIES: ${{ secrets.RAKUTEN_COOKIES }}
+        run: echo "$RAKUTEN_COOKIES" > data/rakuten_cookies.json
+
+      - name: 自動投稿を実行
+        env:
+          RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
+          RAKUTEN_ACCESS_KEY: ${{ secrets.RAKUTEN_ACCESS_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CI: "true"
+        run: python main.py --now
+
+      - name: 投稿履歴をコミット
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/posted_items.json
+          git diff --staged --quiet || git commit -m "投稿履歴更新 $(date +'%Y-%m-%d %H:%M')"
+          git push
+
+      - name: ログをアップロード（確認用）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 7

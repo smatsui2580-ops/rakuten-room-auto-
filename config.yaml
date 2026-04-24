@@ -1,0 +1,56 @@
+# ==============================
+# 楽天ROOM自動投稿 設定ファイル
+# ==============================
+
+# 商品検索設定
+search:
+  # 検索キーワードリスト
+  keywords:
+    - "おうちカフェ おしゃれ"
+    - "かわいい キッチン雑貨"
+    - "癒し インテリア雑貨"
+    - "ティーポット おしゃれ"
+    - "北欧雑貨 かわいい"
+
+  # 1回の実行で取得する商品数
+  items_per_search: 5
+
+  # 商品フィルタリング条件
+  min_review_count: 10       # レビュー数の最低ライン
+  min_review_average: 3.5    # 平均評価の最低ライン
+  min_price: 500             # 最低価格（円）
+  max_price: 30000           # 最高価格（円）
+  sort: "-reviewCount"       # ソート順: -reviewCount(レビュー数降順), -itemPrice, +itemPrice, standard
+
+# 投稿設定
+posting:
+  # 1日の最大投稿件数
+  max_posts_per_day: 3
+
+  # 投稿スケジュール（HH:MM 形式、複数設定可）
+  schedule_times:
+    - "09:00"
+    - "15:00"
+    - "20:00"
+
+  # 同じ商品を何日後なら再投稿OKか
+  repost_interval_days: 30
+
+# キャプション生成設定
+caption:
+  # キャプションのトーン
+  tone: "ほっこり癒し系・絵本のような世界観・女性向け・絵文字多め"
+  # 最大文字数
+  max_length: 350
+  # ハッシュタグを自動追加するか
+  add_hashtags: true
+  # 追加するハッシュタグ数
+  hashtag_count: 7
+
+# ブラウザ設定
+browser:
+  # headless: true にすると画面が表示されない（本番向け）
+  # headless: false にするとブラウザ画面が見える（デバッグ向け）
+  headless: false
+  # 操作間のウェイト（秒）。サイトに負荷をかけないよう適度に設定
+  action_delay: 2
