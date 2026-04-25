@@ -2,6 +2,7 @@
 楽天市場API経由で商品を検索・取得するモジュール
 """
 
+import random
 import requests
 import logging
 from dataclasses import dataclass
@@ -43,12 +44,16 @@ class RakutenAPI:
     ) -> list[RakutenItem]:
         """楽天市場APIで商品を検索して条件でフィルタリングして返す"""
 
+        # 毎回違う商品を取得するためにページをランダムにずらす
+        page = random.randint(1, 5)
+
         params = {
             "format": "json",
             "keyword": keyword,
             "applicationId": self.app_id,
             "accessKey": self.access_key,
-            "hits": min(hits * 3, 30),  # フィルタ後に必要数残るよう多めに取得
+            "hits": 30,
+            "page": page,
             "sort": sort,
             "imageFlag": 1,
         }

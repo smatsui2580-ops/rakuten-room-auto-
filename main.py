@@ -127,6 +127,13 @@ def run_auto_post(config: dict, test_mode: bool = False):
     logger.info(f"自動投稿完了: {posted_count}件投稿")
     logger.info("=" * 50)
 
+    # スケジューラー実行時（CI以外）は投稿後にスリープ
+    if not test_mode and os.getenv("CI") != "true" and "--now" not in sys.argv:
+        logger.info("投稿完了 → 5分後にスリープします")
+        import time
+        time.sleep(300)
+        os.system("pmset sleepnow")
+
 
 def main():
     load_dotenv()
