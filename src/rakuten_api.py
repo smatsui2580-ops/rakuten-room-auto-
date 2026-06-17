@@ -3,6 +3,7 @@
 """
 
 import random
+import time
 import requests
 import logging
 from dataclasses import dataclass
@@ -26,7 +27,7 @@ class RakutenItem:
 
 
 class RakutenAPI:
-    BASE_URL = "https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Search/20260401"
+    BASE_URL = "https://app.rakuten.co.jp/services/api/IchibaItem/Search/20170706"
 
     def __init__(self, app_id: str, access_key: str):
         self.app_id = app_id
@@ -51,7 +52,6 @@ class RakutenAPI:
             "format": "json",
             "keyword": keyword,
             "applicationId": self.app_id,
-            "accessKey": self.access_key,
             "hits": 30,
             "page": page,
             "sort": sort,
@@ -63,6 +63,7 @@ class RakutenAPI:
             params["maxPrice"] = max_price
 
         try:
+            time.sleep(random.uniform(1.5, 2.5))
             response = requests.get(self.BASE_URL, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()

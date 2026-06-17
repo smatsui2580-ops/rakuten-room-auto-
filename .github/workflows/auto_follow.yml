@@ -1,17 +1,15 @@
-name: 楽天ROOM自動投稿
+name: 楽天ROOM自動フォロー
 
 on:
   schedule:
-    - cron: '0 0 * * *'    # 09:00 JST
-    - cron: '0 2 * * *'    # 11:00 JST
-    - cron: '0 4 * * *'    # 13:00 JST
-    - cron: '0 6 * * *'    # 15:00 JST
-    - cron: '0 8 * * *'    # 17:00 JST
-    - cron: '0 11 * * *'   # 20:00 JST
+    - cron: '0 1 * * *'    # 10:00 JST
+    - cron: '0 5 * * *'    # 14:00 JST
+    - cron: '0 9 * * *'    # 18:00 JST
+    - cron: '0 13 * * *'   # 22:00 JST
   workflow_dispatch:
 
 jobs:
-  post:
+  follow:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -34,28 +32,25 @@ jobs:
       - name: ログ・データフォルダを作成
         run: mkdir -p logs data
 
-      - name: 自動投稿を実行（4件）
+      - name: 自動フォローを実行（50件）
         env:
-          RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
-          RAKUTEN_ACCESS_KEY: ${{ secrets.RAKUTEN_ACCESS_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           RAKUTEN_EMAIL: ${{ secrets.RAKUTEN_EMAIL }}
           RAKUTEN_PASSWORD: ${{ secrets.RAKUTEN_PASSWORD }}
           CI: "true"
-        run: python main.py --post
+        run: python main.py --follow
 
-      - name: 投稿履歴・クッキーをコミット
+      - name: フォロー履歴・クッキーをコミット
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/posted_items.json data/rakuten_cookies.json || true
-          git diff --staged --quiet || git commit -m "投稿履歴更新 $(date +'%Y-%m-%d %H:%M')"
+          git add data/followed_users.json data/rakuten_cookies.json || true
+          git diff --staged --quiet || git commit -m "フォロー履歴更新 $(date +'%Y-%m-%d %H:%M')"
           git push
 
       - name: ログをアップロード（確認用）
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: post-logs-${{ github.run_id }}
+          name: follow-logs-${{ github.run_id }}
           path: logs/
           retention-days: 7

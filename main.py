@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 from src.rakuten_api import RakutenAPI
 from src.caption_generator import CaptionGenerator
 from src.room_poster import post_to_room
+from src.room_follower import run_auto_follow
 from src import history
 
 # ロギング設定
@@ -41,7 +42,7 @@ def load_config() -> dict:
         return yaml.safe_load(f)
 
 
-def run_auto_post(config: dict, test_mode: bool = False):
+def run_auto_post(config: dict, test_mode: bool = False, skip_follow: bool = False):
     """商品検索 → キャプション生成 → ROOM投稿 を実行"""
 
     logger.info("=" * 50)
@@ -117,14 +118,33 @@ def run_auto_post(config: dict, test_mode: bool = False):
                 headless=headless,
             ))
 
-            if success:
+            if success is True:
                 history.mark_as_posted(item.item_code)
                 posted_count += 1
                 logger.info(f"投稿成功 ({posted_count}/{max_posts})")
+            elif success == "duplicate":
+                history.mark_as_posted(item.item_code)
+                logger.info(f"重複のため履歴に記録してスキップ: {item.item_name[:30]}...")
             else:
                 logger.warning(f"投稿失敗: {item.item_name[:30]}...")
 
     logger.info(f"自動投稿完了: {posted_count}件投稿")
+
+    # 自動フォロー
+    follow_cfg = config.get("follow", {})
+    if not skip_follow and follow_cfg.get("enabled", False):
+        logger.info("--- 自動フォロー開始 ---")
+        headless = True if os.getenv("CI") == "true" else browser_cfg["headless"]
+        followed = asyncio.run(run_auto_follow(
+            my_room_user_id=follow_cfg["my_room_user_id"],
+            search_keywords=follow_cfg.get("search_keywords", search_cfg["keywords"]),
+            max_follows=follow_cfg.get("max_follows", 30),
+            action_delay=browser_cfg["action_delay"],
+            headless=headless,
+            refollow_days=follow_cfg.get("refollow_days", 30),
+        ))
+        logger.info(f"自動フォロー完了: {followed}件")
+
     logger.info("=" * 50)
 
     # スケジューラー実行時（CI以外）は投稿後にスリープ
@@ -135,17 +155,47 @@ def run_auto_post(config: dict, test_mode: bool = False):
         os.system("pmset sleepnow")
 
 
+def run_follow_only(config: dict):
+    """フォローのみ実行"""
+    load_dotenv()
+    logger.info("=" * 50)
+    logger.info(f"自動フォロー開始: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    follow_cfg = config.get("follow", {})
+    browser_cfg = config["browser"]
+    search_cfg = config["search"]
+    headless = True if os.getenv("CI") == "true" else browser_cfg["headless"]
+    followed = asyncio.run(run_auto_follow(
+        my_room_user_id=follow_cfg["my_room_user_id"],
+        search_keywords=follow_cfg.get("search_keywords", search_cfg["keywords"]),
+        max_follows=follow_cfg.get("max_follows", 30),
+        action_delay=browser_cfg["action_delay"],
+        headless=headless,
+        refollow_days=follow_cfg.get("refollow_days", 30),
+    ))
+    logger.info(f"自動フォロー完了: {followed}件")
+    logger.info("=" * 50)
+
+
 def main():
     load_dotenv()
     config = load_config()
 
     args = sys.argv[1:]
     test_mode = "--test" in args
-    run_now = "--now" in args or test_mode
+    post_only = "--post" in args
+    follow_only = "--follow" in args
+    run_now = "--now" in args or test_mode or post_only or follow_only
 
     if run_now:
-        logger.info("手動実行モード" + (" [テスト]" if test_mode else ""))
-        run_auto_post(config, test_mode=test_mode)
+        if follow_only:
+            logger.info("フォローのみモード")
+            run_follow_only(config)
+        elif post_only:
+            logger.info("投稿のみモード" + (" [テスト]" if test_mode else ""))
+            run_auto_post(config, test_mode=test_mode, skip_follow=True)
+        else:
+            logger.info("手動実行モード" + (" [テスト]" if test_mode else ""))
+            run_auto_post(config, test_mode=test_mode)
         return
 
     # スケジューラー起動

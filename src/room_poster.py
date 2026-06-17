@@ -10,6 +10,7 @@ Playwrightで楽天ROOMに投稿するモジュール
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 from playwright.async_api import async_playwright, Page, BrowserContext
 
@@ -62,6 +63,7 @@ async def post_to_room(
     item_code: str = "",
     action_delay: int = 2,
     headless: bool = False,
+    _auto_login_retry: bool = False,
 ) -> bool:
     """楽天ROOMに商品を投稿する"""
 
@@ -111,13 +113,37 @@ async def post_to_room(
                 await page.wait_for_load_state("domcontentloaded")
                 await page.wait_for_timeout(action_delay * 1000)
 
-            # ログインページに飛んだ場合はエラー
+            # ログインページに飛んだ場合はクッキー期限切れ → 自動再ログイン
             if "id.rakuten" in page.url or ("login" in page.url and "room" not in page.url):
-                logger.error(f"ログインページにリダイレクト: {page.url}")
-                logger.error("login.py を再実行してください")
-                await page.screenshot(path="logs/post_failed.png")
+                logger.warning(f"クッキー期限切れを検知: {page.url}")
                 await browser.close()
-                return False
+
+                if _auto_login_retry:
+                    logger.error("自動ログイン後も失敗 → 処理を中断します")
+                    return False
+
+                email = os.getenv("RAKUTEN_EMAIL")
+                password = os.getenv("RAKUTEN_PASSWORD")
+                if not email or not password:
+                    logger.error("RAKUTEN_EMAIL / RAKUTEN_PASSWORD が未設定のため自動ログインできません")
+                    return False
+
+                from src.auto_login import auto_login_rakuten
+                logger.info("自動ログインを実行します...")
+                login_ok = await auto_login_rakuten(email, password)
+                if not login_ok:
+                    logger.error("自動ログイン失敗")
+                    return False
+
+                logger.info("自動ログイン成功 → 投稿を再試行します")
+                return await post_to_room(
+                    item_url=item_url,
+                    caption=caption,
+                    item_code=item_code,
+                    action_delay=action_delay,
+                    headless=headless,
+                    _auto_login_retry=True,
+                )
 
             posted = await _fill_caption_and_post(page, caption, action_delay)
 
@@ -231,12 +257,12 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
             # 「すでにコレ！している商品です」ダイアログ → 投稿済み商品
             already_dialog = page.locator('text="すでにコレ！している商品です"')
             if await already_dialog.is_visible(timeout=2000):
-                logger.warning("すでにコレ！済みの商品 → スキップ")
+                logger.warning("すでにコレ！済みの商品 → スキップ（履歴に記録）")
                 try:
                     await page.locator('button:has-text("OK")').first.click()
                 except Exception:
                     pass
-                return False
+                return "duplicate"
 
             # 投稿成功の確認：「my ROOMを見る」または「編集・削除」が出れば成功
             success_indicators = [
