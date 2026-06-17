@@ -235,31 +235,27 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
                 await t.click()
                 await page.wait_for_timeout(500)
 
-                # まずPlaywrightのfill()を試す（Reactのイベントを正しくトリガーする）
+                # fill()でDOM値を設定したあと、必ずJSでAngularJSのスコープも更新する
                 await t.fill(caption)
+                await page.wait_for_timeout(300)
+
+                await page.evaluate(
+                    """([sel, text]) => {
+                        const el = document.querySelector(sel);
+                        if (!el) return;
+                        const setter = Object.getOwnPropertyDescriptor(
+                            window.HTMLTextAreaElement.prototype, 'value'
+                        ).set;
+                        setter.call(el, text);
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                    }""",
+                    [selector, caption]
+                )
                 await page.wait_for_timeout(500)
 
                 actual_value = await t.input_value()
-                logger.info(f"キャプション入力(fill): セレクタ={selector}, 入力文字数={len(actual_value)}")
-
-                # fill()で入らない場合はJS経由で強制セット
-                if len(actual_value) == 0:
-                    await page.evaluate(
-                        """([sel, text]) => {
-                            const el = document.querySelector(sel);
-                            if (!el) return;
-                            const setter = Object.getOwnPropertyDescriptor(
-                                window.HTMLTextAreaElement.prototype, 'value'
-                            ).set;
-                            setter.call(el, text);
-                            el.dispatchEvent(new Event('input', { bubbles: true }));
-                            el.dispatchEvent(new Event('change', { bubbles: true }));
-                        }""",
-                        [selector, caption]
-                    )
-                    await page.wait_for_timeout(500)
-                    actual_value = await t.input_value()
-                    logger.info(f"キャプション入力(JS): セレクタ={selector}, 入力文字数={len(actual_value)}")
+                logger.info(f"キャプション入力: セレクタ={selector}, 入力文字数={len(actual_value)}")
 
                 await page.wait_for_timeout(action_delay * 1000)
                 if len(actual_value) > 0:
