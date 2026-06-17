@@ -45,8 +45,8 @@ class RakutenAPI:
     ) -> list[RakutenItem]:
         """楽天市場APIで商品を検索して条件でフィルタリングして返す"""
 
-        # 毎回違う商品を取得するためにページをランダムにずらす
-        page = random.randint(1, 5)
+        # hits=30 × page ≤ 100 の制限があるため最大ページは3
+        page = random.randint(1, 3)
 
         params = {
             "format": "json",
