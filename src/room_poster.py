@@ -254,25 +254,11 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
 
     # 「完了」ボタンをクリック → これが投稿ボタン（キャプション入力済みの場合）
     try:
-        # オーバーレイ（div.background）が出ている場合はOKボタンで閉じる
-        try:
-            ok_btn = page.locator('a.button:has-text("OK"), button:has-text("OK")').first
-            if await ok_btn.is_visible(timeout=2000):
-                await ok_btn.click()
-                logger.info("OKダイアログを閉じました")
-                await page.wait_for_timeout(1000)
-        except Exception:
-            pass
-
         done_btn = page.locator('button.collect-btn, button:has-text("完了")').first
         if await done_btn.is_visible(timeout=3000):
             await done_btn.scroll_into_view_if_needed()
-            # overlayに邪魔される場合はJavaScript経由でクリック
-            try:
-                await done_btn.click(timeout=5000)
-            except Exception:
-                logger.info("通常クリック失敗 → JavaScript経由でクリック")
-                await page.evaluate("document.querySelector('button.collect-btn').click()")
+            # div.backgroundのオーバーレイを回避するためJS経由でクリック
+            await page.evaluate("document.querySelector('button.collect-btn').click()")
             logger.info("投稿ボタンクリック（完了）")
             await page.wait_for_timeout(3000)
             await page.screenshot(path="logs/after_post.png")
