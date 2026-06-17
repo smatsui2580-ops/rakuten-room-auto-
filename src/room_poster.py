@@ -196,6 +196,19 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
     await page.screenshot(path="logs/before_fill.png")
     logger.info(f"入力前スクリーンショット: logs/before_fill.png / URL: {page.url}")
 
+    # テキストエリアを探す前に「すでにコレ！」ダイアログを先に検知
+    try:
+        already = page.locator('text="すでにコレ！している商品です"')
+        if await already.is_visible(timeout=2000):
+            logger.warning("すでにコレ！済み（入力前に検知） → スキップ")
+            try:
+                await page.locator('a.button:has-text("OK"), button:has-text("OK")').first.click()
+            except Exception:
+                pass
+            return "duplicate"
+    except Exception:
+        pass
+
     # キャプション入力欄を探す（ROOM投稿ページのテキストエリア）
     textarea_selectors = [
         'textarea[placeholder*="オススメポイント"]',
@@ -287,8 +300,9 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
                 except Exception:
                     continue
 
-            logger.info(f"投稿後URL: {page.url}")
-            return True  # ダイアログも出ず成功インジケータも不明な場合は成功扱い
+            # 投稿後もURLが変わっていない場合は失敗とみなす
+            logger.warning(f"投稿後URL: {page.url} / 成功インジケータ未確認 → 失敗扱い")
+            return False
     except Exception as e:
         logger.error(f"投稿ボタンクリック失敗: {e}")
 
