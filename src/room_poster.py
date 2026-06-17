@@ -196,15 +196,24 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
     await page.screenshot(path="logs/before_fill.png")
     logger.info(f"入力前スクリーンショット: logs/before_fill.png / URL: {page.url}")
 
-    # テキストエリアを探す前に「すでにコレ！」ダイアログを先に検知
+    # テキストエリアを探す前に投稿済み状態を早期検知
     try:
+        # ① 「すでにコレ！している商品です」ダイアログ
         already = page.locator('text="すでにコレ！している商品です"')
-        if await already.is_visible(timeout=2000):
-            logger.warning("すでにコレ！済み（入力前に検知） → スキップ")
+        if await already.is_visible(timeout=1500):
+            logger.warning("すでにコレ！済み（ダイアログ検知） → スキップ")
             try:
                 await page.locator('a.button:has-text("OK"), button:has-text("OK")').first.click()
             except Exception:
                 pass
+            return "duplicate"
+    except Exception:
+        pass
+    try:
+        # ② 「この商品を削除」ボタンが出ている = 編集モード = すでに収集済み
+        delete_btn = page.locator('a:has-text("この商品を削除"), button:has-text("この商品を削除")')
+        if await delete_btn.is_visible(timeout=1500):
+            logger.warning("編集モード検知（この商品を削除ボタンあり） → 重複スキップ")
             return "duplicate"
     except Exception:
         pass
@@ -221,7 +230,7 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
     for selector in textarea_selectors:
         try:
             t = page.locator(selector).first
-            if await t.is_visible(timeout=3000):
+            if await t.is_visible(timeout=1500):
                 await t.scroll_into_view_if_needed()
                 await t.click()
                 await page.wait_for_timeout(500)
