@@ -1,6 +1,5 @@
 .env
 __pycache__/
 *.pyc
-logs/*.png
-logs/*.log
+logs/
 data/rakuten_cookies.json
