@@ -49,25 +49,13 @@ async def auto_login_rakuten(email: str, password: str) -> bool:
         page = await context.new_page()
 
         try:
-            # 楽天ログインページへ直接アクセス
+            # 楽天SSOログインページへ直接アクセス
             await page.goto(
-                "https://www.rakuten.co.jp/myrakuten/help/?scid=wi_ich_rack_header_login",
+                "https://id.rakuten.co.jp/",
                 wait_until="domcontentloaded",
                 timeout=60000,
             )
             await page.wait_for_timeout(2000)
-
-            # ログインページに遷移しているか確認
-            if "id.rakuten" not in page.url and "login" not in page.url.lower():
-                # まだログインページに来ていない場合はログインリンクを探す
-                login_link = page.locator('a[href*="login"], a:has-text("ログイン")').first
-                try:
-                    if await login_link.is_visible(timeout=3000):
-                        await login_link.click()
-                        await page.wait_for_load_state("domcontentloaded")
-                        await page.wait_for_timeout(2000)
-                except Exception:
-                    pass
 
             logger.info(f"ログインページURL: {page.url}")
 
