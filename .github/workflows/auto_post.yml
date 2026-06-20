@@ -37,7 +37,9 @@ jobs:
       - name: クッキーをSecretsから復元
         env:
           RAKUTEN_COOKIES: ${{ secrets.RAKUTEN_COOKIES }}
-        run: echo "$RAKUTEN_COOKIES" > data/rakuten_cookies.json
+        run: |
+          printf '%s' "$RAKUTEN_COOKIES" > data/rakuten_cookies.json
+          python3 -c "import json; data=json.load(open('data/rakuten_cookies.json')); print(f'クッキー読み込み確認: {len(data)}件')"
 
       - name: 自動投稿を実行（4件）
         env:
