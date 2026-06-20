@@ -68,7 +68,8 @@ async def post_to_room(
     """楽天ROOMに商品を投稿する"""
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=headless)
+        launch_args = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"] if os.getenv("CI") else []
+        browser = await p.chromium.launch(headless=headless, args=launch_args)
         context = await browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",

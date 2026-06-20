@@ -8,6 +8,7 @@
 
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from playwright.async_api import async_playwright, Page, BrowserContext
@@ -214,7 +215,8 @@ async def run_auto_follow(
         search_keywords = ["おうちカフェ", "ナチュラル雑貨", "キッチン雑貨", "北欧インテリア"]
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=headless)
+        launch_args = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"] if os.getenv("CI") else []
+        browser = await p.chromium.launch(headless=headless, args=launch_args)
         context = await browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
