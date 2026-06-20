@@ -39,11 +39,11 @@ jobs:
           CI: "true"
         run: python main.py --follow
 
-      - name: フォロー履歴・クッキーをコミット
+      - name: フォロー履歴をコミット
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/followed_users.json data/rakuten_cookies.json || true
+          git add data/followed_users.json || true
           git diff --staged --quiet || git commit -m "フォロー履歴更新 $(date +'%Y-%m-%d %H:%M')"
           git push
 

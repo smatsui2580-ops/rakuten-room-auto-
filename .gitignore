@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 logs/*.png
 logs/*.log
+data/rakuten_cookies.json

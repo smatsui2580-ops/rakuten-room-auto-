@@ -148,7 +148,8 @@ async def post_to_room(
             posted = await _fill_caption_and_post(page, caption, action_delay)
 
             if posted:
-                await _save_cookies(context)
+                if os.getenv("CI") != "true":
+                    await _save_cookies(context)
                 logger.info("投稿完了")
             else:
                 await page.screenshot(path="logs/post_failed.png")
