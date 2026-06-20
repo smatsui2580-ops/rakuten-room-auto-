@@ -49,39 +49,37 @@ async def auto_login_rakuten(email: str, password: str) -> bool:
         page = await context.new_page()
 
         try:
-            # 楽天トップからログインボタン経由でSSOページへ遷移
-            await page.goto(
-                "https://www.rakuten.co.jp/",
-                wait_until="domcontentloaded",
-                timeout=60000,
+            # 楽天SSOログインページへ直接アクセス（React SPA）
+            login_url = (
+                "https://login.account.rakuten.com/sso/authorize"
+                "?client_id=rakuten_ichiba_top_web"
+                "&service_id=245"
+                "&response_type=code"
+                "&scope=openid"
+                "&redirect_uri=https%3A%2F%2Fwww.rakuten.co.jp%2F"
+                "#/sign_in"
             )
-            await page.wait_for_timeout(2000)
-
-            # ログインリンクをクリックして実際のSSOログインページへ
-            login_link = page.locator('a[href*="login"]:has-text("ログイン"), a.loginUser').first
-            try:
-                if await login_link.is_visible(timeout=5000):
-                    await login_link.click()
-                    await page.wait_for_load_state("domcontentloaded")
-                    await page.wait_for_timeout(2000)
-            except Exception:
-                # フォールバック: grp02サブドメインのログインURL
-                await page.goto(
-                    "https://grp02.id.rakuten.co.jp/rms/nid/login?scid=wi_ich_rack_header_login",
-                    wait_until="domcontentloaded",
-                    timeout=60000,
-                )
-                await page.wait_for_timeout(2000)
+            await page.goto(login_url, wait_until="domcontentloaded", timeout=60000)
+            # SPAのフォーム描画を待つ
+            await page.wait_for_timeout(4000)
 
             logger.info(f"ログインページURL: {page.url}")
+
+            # SPAのフォーム描画を待つ（最大10秒）
+            try:
+                await page.wait_for_selector('input', timeout=10000)
+            except Exception:
+                pass
 
             # メールアドレス入力
             email_selectors = [
                 'input[name="u"]',
                 'input[type="email"]',
                 'input[name="email"]',
+                'input[name="username"]',
                 'input[placeholder*="メールアドレス"]',
                 'input[placeholder*="ユーザーID"]',
+                'input[placeholder*="メール"]',
             ]
             email_filled = False
             for sel in email_selectors:
