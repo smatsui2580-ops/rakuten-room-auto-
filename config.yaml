@@ -40,7 +40,7 @@ search:
 # 投稿設定
 posting:
   # 1回の実行あたりの最大投稿件数
-  max_posts_per_day: 4
+  max_posts_per_day: 3
 
   # 投稿スケジュール（HH:MM 形式、複数設定可）
   schedule_times:
@@ -78,7 +78,7 @@ follow:
   # 自分の楽天ROOMユーザーID（URLの room.rakuten.co.jp/room/◯◯◯ の部分）
   my_room_user_id: "room_1988b87b48"
   # 1回の実行でフォローする最大件数
-  max_follows: 50
+  max_follows: 5
   # 同じユーザーを再フォローするまでの日数
   refollow_days: 30
   # 自動フォローを有効にするか
