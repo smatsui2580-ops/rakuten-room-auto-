@@ -245,12 +245,26 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
                         """([sel, text]) => {
                             const el = document.querySelector(sel);
                             if (!el) return;
+                            // ネイティブセッターでDOM値を設定
                             const setter = Object.getOwnPropertyDescriptor(
                                 window.HTMLTextAreaElement.prototype, 'value'
                             ).set;
                             setter.call(el, text);
                             el.dispatchEvent(new Event('input', { bubbles: true }));
                             el.dispatchEvent(new Event('change', { bubbles: true }));
+                            // AngularJSのng-modelを直接更新
+                            try {
+                                if (window.angular) {
+                                    const scope = window.angular.element(el).scope();
+                                    if (scope) {
+                                        const ngModel = el.getAttribute('ng-model');
+                                        if (ngModel) {
+                                            scope.$eval(ngModel + ' = _v', {_v: text});
+                                        }
+                                        scope.$apply();
+                                    }
+                                }
+                            } catch(e) {}
                         }""",
                         [selector, caption]
                     )
