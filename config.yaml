@@ -35,7 +35,7 @@ search:
   min_review_average: 3.5    # 平均評価の最低ライン
   min_price: 500             # 最低価格（円）
   max_price: 30000           # 最高価格（円）
-  sort: "-reviewCount"       # ソート順: -reviewCount(レビュー数降順), -itemPrice, +itemPrice, standard
+  sort: "standard"           # ソート順: standard(標準), -reviewCount(レビュー数降順), -updateTimestamp(新着)
 
 # 投稿設定
 posting:

@@ -236,26 +236,32 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
                 await t.click()
                 await page.wait_for_timeout(500)
 
-                # fill()でDOM値を設定したあと、必ずJSでAngularJSのスコープも更新する
-                await t.fill(caption)
-                await page.wait_for_timeout(300)
+                # 最大3回リトライ（Angular初期化待ち）
+                for attempt in range(3):
+                    await t.fill(caption)
+                    await page.wait_for_timeout(300)
 
-                await page.evaluate(
-                    """([sel, text]) => {
-                        const el = document.querySelector(sel);
-                        if (!el) return;
-                        const setter = Object.getOwnPropertyDescriptor(
-                            window.HTMLTextAreaElement.prototype, 'value'
-                        ).set;
-                        setter.call(el, text);
-                        el.dispatchEvent(new Event('input', { bubbles: true }));
-                        el.dispatchEvent(new Event('change', { bubbles: true }));
-                    }""",
-                    [selector, caption]
-                )
-                await page.wait_for_timeout(500)
+                    await page.evaluate(
+                        """([sel, text]) => {
+                            const el = document.querySelector(sel);
+                            if (!el) return;
+                            const setter = Object.getOwnPropertyDescriptor(
+                                window.HTMLTextAreaElement.prototype, 'value'
+                            ).set;
+                            setter.call(el, text);
+                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                        }""",
+                        [selector, caption]
+                    )
+                    await page.wait_for_timeout(500)
 
-                actual_value = await t.input_value()
+                    actual_value = await t.input_value()
+                    if len(actual_value) > 0:
+                        break
+                    logger.debug(f"入力値0のためリトライ ({attempt+1}/3)")
+                    await page.wait_for_timeout(1500)
+
                 logger.info(f"キャプション入力: セレクタ={selector}, 入力文字数={len(actual_value)}")
 
                 await page.wait_for_timeout(action_delay * 1000)
