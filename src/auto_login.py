@@ -164,23 +164,18 @@ async def auto_login_rakuten(email: str, password: str) -> bool:
 
             await page.wait_for_timeout(800)
 
-            # ログインボタンクリック
-            submit_selectors = [
-                'button[type="submit"]',
-                'input[type="submit"]',
-                'button:has-text("ログイン")',
-            ]
+            # ログインボタンをJS経由で強制クリック（disabled状態でも動作）
             submitted = False
-            for sel in submit_selectors:
-                try:
-                    btn = page.locator(sel).first
-                    if await btn.is_visible(timeout=2000):
-                        await btn.click()
-                        submitted = True
-                        logger.info("ログインボタンクリック")
-                        break
-                except Exception:
-                    continue
+            try:
+                await page.evaluate("""() => {
+                    const btn = document.querySelector('button[type="submit"]')
+                               || document.querySelector('button');
+                    if (btn) btn.click();
+                }""")
+                submitted = True
+                logger.info("ログインボタンJS強制クリック")
+            except Exception:
+                pass
 
             if not submitted:
                 await page.keyboard.press("Enter")
