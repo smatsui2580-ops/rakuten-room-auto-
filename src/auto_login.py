@@ -101,23 +101,11 @@ async def auto_login_rakuten(email: str, password: str) -> bool:
 
             await page.wait_for_timeout(800)
 
-            # 「次へ」ボタンをクリック（2ステップログイン対応）
-            next_selectors = [
-                'button[type="submit"]',
-                'button:has-text("次へ")',
-                'button:has-text("Next")',
-                'input[type="submit"]',
-            ]
-            for sel in next_selectors:
-                try:
-                    btn = page.locator(sel).first
-                    if await btn.is_visible(timeout=2000):
-                        await btn.click()
-                        logger.info(f"次へボタンクリック: {sel}")
-                        await page.wait_for_timeout(3000)
-                        break
-                except Exception:
-                    continue
+            # Enterキーでユーザー名フォームを送信（2ステップログイン対応）
+            await page.keyboard.press("Enter")
+            logger.info("Enterキーでユーザー名フォーム送信")
+            # パスワード画面の描画を待つ
+            await page.wait_for_timeout(4000)
 
             # パスワード入力
             pass_selectors = [
