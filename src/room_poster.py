@@ -276,11 +276,28 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
         done_btn = page.locator('button.collect-btn, button:has-text("完了")').first
         if await done_btn.is_visible(timeout=3000):
             await done_btn.scroll_into_view_if_needed()
-            # div.backgroundのオーバーレイを回避するためJS経由でクリック
-            await page.evaluate("document.querySelector('button.collect-btn').click()")
+
+            # force=True でオーバーレイを無視して直接クリック
+            try:
+                await done_btn.click(force=True)
+            except Exception:
+                # フォールバック: JS経由でクリック
+                await page.evaluate("document.querySelector('button.collect-btn').click()")
             logger.info("投稿ボタンクリック（完了）")
-            await page.wait_for_timeout(3000)
+
+            # ネットワーク処理完了まで待機（CI環境は遅いため長めに）
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                await page.wait_for_timeout(6000)
             await page.screenshot(path="logs/after_post.png")
+
+            # ページ上の全テキストをログ出力（デバッグ用）
+            try:
+                page_text = await page.evaluate("() => document.body.innerText.slice(0, 500)")
+                logger.info(f"クリック後ページテキスト: {page_text[:200]}")
+            except Exception:
+                pass
 
             # 「すでにコレ！している商品です」ダイアログ → 投稿済み商品
             already_dialog = page.locator('text="すでにコレ！している商品です"')
@@ -292,21 +309,33 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
                     pass
                 return "duplicate"
 
-            # 投稿成功の確認：「my ROOMを見る」または「編集・削除」が出れば成功
+            # 投稿成功の確認：各種インジケータを確認
             success_indicators = [
                 'text="my ROOMを見る"',
                 'text="編集・削除"',
                 'a:has-text("my ROOM")',
+                'text="コレ！した"',
+                'text="コレ！しました"',
+                '[class*="success"]',
+                '[class*="complete"]',
             ]
             for indicator in success_indicators:
                 try:
-                    if await page.locator(indicator).first.is_visible(timeout=3000):
+                    if await page.locator(indicator).first.is_visible(timeout=2000):
                         logger.info(f"投稿成功確認: {indicator} / URL: {page.url}")
                         return True
                 except Exception:
                     continue
 
-            # 投稿後もURLが変わっていない場合は失敗とみなす
+            # テキストエリアが消えていれば投稿成功とみなす
+            try:
+                textarea = page.locator('textarea[placeholder*="オススメポイント"]')
+                if not await textarea.is_visible(timeout=1000):
+                    logger.info("テキストエリア消滅 → 投稿成功とみなす")
+                    return True
+            except Exception:
+                pass
+
             logger.warning(f"投稿後URL: {page.url} / 成功インジケータ未確認 → 失敗扱い")
             return False
     except Exception as e:
