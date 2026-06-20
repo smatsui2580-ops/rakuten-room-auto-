@@ -169,6 +169,11 @@ async def _follow_user(page: Page, user_id: str, action_delay: int = 2) -> bool:
         await page.goto(profile_url, wait_until="domcontentloaded", timeout=30000)
         await page.wait_for_timeout(action_delay * 1000)
 
+        # クッキー期限切れ検知
+        if "id.rakuten" in page.url or ("login" in page.url and "room" not in page.url):
+            logger.error(f"クッキー期限切れ検知（フォロー）: {page.url}")
+            return False
+
         # フォローボタンを探す
         follow_selectors = [
             'button:has-text("フォローする")',
@@ -186,7 +191,7 @@ async def _follow_user(page: Page, user_id: str, action_delay: int = 2) -> bool:
                         logger.info(f"すでにフォロー済み: {user_id}")
                         return False
 
-                    await btn.click()
+                    await btn.click(force=True)
                     await page.wait_for_timeout(action_delay * 1000)
                     logger.info(f"フォロー完了: {user_id}")
                     return True
@@ -230,6 +235,34 @@ async def run_auto_follow(
 
         await context.add_cookies(cookies)
         page = await context.new_page()
+
+        # クッキー有効性確認
+        await page.goto("https://room.rakuten.co.jp/", wait_until="domcontentloaded", timeout=30000)
+        await page.wait_for_timeout(2000)
+        if "id.rakuten" in page.url or ("login" in page.url and "room" not in page.url):
+            logger.error(f"クッキー期限切れ（フォロー開始時）: {page.url}")
+            # 自動ログイン試行
+            email = os.getenv("RAKUTEN_EMAIL")
+            password = os.getenv("RAKUTEN_PASSWORD")
+            if email and password:
+                from src.auto_login import auto_login_rakuten
+                logger.info("自動ログインを試みます...")
+                login_ok = await auto_login_rakuten(email, password)
+                if not login_ok:
+                    await browser.close()
+                    return 0
+                # 新しいクッキーを読み込んで続行
+                new_cookies = _load_cookies()
+                if new_cookies:
+                    await context.add_cookies(new_cookies)
+                    logger.info(f"自動ログイン後クッキー再読み込み: {len(new_cookies)}件")
+                else:
+                    await browser.close()
+                    return 0
+            else:
+                logger.error("RAKUTEN_EMAIL / RAKUTEN_PASSWORD 未設定のため自動ログイン不可")
+                await browser.close()
+                return 0
 
         follow_count = 0
         try:

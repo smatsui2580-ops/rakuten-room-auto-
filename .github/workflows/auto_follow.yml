@@ -46,6 +46,18 @@ jobs:
           CI: "true"
         run: python main.py --follow
 
+      - name: クッキーをSecretsに更新（自動ログイン後に更新された場合）
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -n "$GH_TOKEN" ] && [ -f data/rakuten_cookies.json ]; then
+            python3 -c "import json; data=json.load(open('data/rakuten_cookies.json')); print(f'クッキー件数: {len(data)}件')" && \
+            gh secret set RAKUTEN_COOKIES < data/rakuten_cookies.json && \
+            echo "クッキーをSecretsに更新しました" || echo "クッキー更新スキップ"
+          else
+            echo "GH_PAT未設定のためクッキー更新スキップ"
+          fi
+
       - name: フォロー履歴をコミット
         run: |
           git config user.name "github-actions[bot]"
