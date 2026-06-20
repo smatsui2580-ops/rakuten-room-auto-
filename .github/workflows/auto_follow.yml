@@ -32,6 +32,11 @@ jobs:
       - name: ログ・データフォルダを作成
         run: mkdir -p logs data
 
+      - name: クッキーをSecretsから復元
+        env:
+          RAKUTEN_COOKIES: ${{ secrets.RAKUTEN_COOKIES }}
+        run: echo "$RAKUTEN_COOKIES" > data/rakuten_cookies.json
+
       - name: 自動フォローを実行（50件）
         env:
           RAKUTEN_EMAIL: ${{ secrets.RAKUTEN_EMAIL }}

@@ -42,31 +42,11 @@ def load_config() -> dict:
         return yaml.safe_load(f)
 
 
-def _ci_auto_login() -> bool:
-    """CI環境での自動ログイン（Cookieはリポジトリに保存しない）"""
-    if os.getenv("CI") != "true":
-        return True
-    email = os.getenv("RAKUTEN_EMAIL")
-    password = os.getenv("RAKUTEN_PASSWORD")
-    if not email or not password:
-        logger.error("CI環境: RAKUTEN_EMAIL / RAKUTEN_PASSWORD が未設定")
-        return False
-    from src.auto_login import auto_login_rakuten
-    logger.info("CI環境: 自動ログイン実行...")
-    ok = asyncio.run(auto_login_rakuten(email, password))
-    if not ok:
-        logger.error("自動ログイン失敗 → 処理を中断します")
-    return ok
-
-
 def run_auto_post(config: dict, test_mode: bool = False, skip_follow: bool = False):
     """商品検索 → キャプション生成 → ROOM投稿 を実行"""
 
     logger.info("=" * 50)
     logger.info(f"自動投稿開始: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
-    if not _ci_auto_login():
-        return
 
     # 環境変数ロード
     rakuten_app_id = os.getenv("RAKUTEN_APP_ID")
@@ -180,9 +160,6 @@ def run_follow_only(config: dict):
     load_dotenv()
     logger.info("=" * 50)
     logger.info(f"自動フォロー開始: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
-    if not _ci_auto_login():
-        return
     follow_cfg = config.get("follow", {})
     browser_cfg = config["browser"]
     search_cfg = config["search"]
