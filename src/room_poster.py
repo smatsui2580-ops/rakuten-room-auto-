@@ -200,7 +200,7 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
     # テキストエリアを探す前に投稿済み状態を早期検知
     try:
         # ① 「すでにコレ！している商品です」ダイアログ
-        already = page.locator('text="すでにコレ！している商品です"')
+        already = page.locator('text=すでにコレ')
         if await already.is_visible(timeout=1500):
             logger.warning("すでにコレ！済み（ダイアログ検知） → スキップ")
             try:
@@ -300,7 +300,7 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
                 pass
 
             # 「すでにコレ！している商品です」ダイアログ → 投稿済み商品
-            already_dialog = page.locator('text="すでにコレ！している商品です"')
+            already_dialog = page.locator('text=すでにコレ')
             if await already_dialog.is_visible(timeout=2000):
                 logger.warning("すでにコレ！済みの商品 → スキップ（履歴に記録）")
                 try:
