@@ -86,7 +86,22 @@ async def auto_login_rakuten(email: str, password: str) -> bool:
                 try:
                     inp = page.locator(sel).first
                     if await inp.is_visible(timeout=2000):
-                        await inp.fill(email)
+                        await inp.click()
+                        await page.wait_for_timeout(300)
+                        await page.evaluate(
+                            """([sel, text]) => {
+                                const el = document.querySelector(sel);
+                                if (!el) return;
+                                const setter = Object.getOwnPropertyDescriptor(
+                                    window.HTMLInputElement.prototype, 'value'
+                                ).set;
+                                setter.call(el, text);
+                                el.dispatchEvent(new Event('input', { bubbles: true }));
+                                el.dispatchEvent(new Event('change', { bubbles: true }));
+                            }""",
+                            [sel, email]
+                        )
+                        await page.wait_for_timeout(300)
                         email_filled = True
                         logger.info(f"メールアドレス入力: {sel}")
                         break
@@ -118,7 +133,23 @@ async def auto_login_rakuten(email: str, password: str) -> bool:
                 try:
                     inp = page.locator(sel).first
                     if await inp.is_visible(timeout=2000):
-                        await inp.fill(password)
+                        await inp.click()
+                        await page.wait_for_timeout(300)
+                        # React SPAはnative setter+dispatchEventが必要
+                        await page.evaluate(
+                            """([sel, text]) => {
+                                const el = document.querySelector(sel);
+                                if (!el) return;
+                                const setter = Object.getOwnPropertyDescriptor(
+                                    window.HTMLInputElement.prototype, 'value'
+                                ).set;
+                                setter.call(el, text);
+                                el.dispatchEvent(new Event('input', { bubbles: true }));
+                                el.dispatchEvent(new Event('change', { bubbles: true }));
+                            }""",
+                            [sel, password]
+                        )
+                        await page.wait_for_timeout(500)
                         pass_filled = True
                         logger.info("パスワード入力完了")
                         break
