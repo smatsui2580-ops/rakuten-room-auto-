@@ -237,7 +237,7 @@ async def run_auto_follow(
         page = await context.new_page()
 
         # クッキー有効性確認
-        await page.goto("https://room.rakuten.co.jp/", wait_until="domcontentloaded", timeout=30000)
+        await page.goto("https://room.rakuten.co.jp/", wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(2000)
         if "id.rakuten" in page.url or ("login" in page.url and "room" not in page.url):
             logger.error(f"クッキー期限切れ（フォロー開始時）: {page.url}")
