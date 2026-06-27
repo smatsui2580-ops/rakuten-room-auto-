@@ -166,7 +166,10 @@ async def _follow_user(page: Page, user_id: str, action_delay: int = 2) -> bool:
     """指定ユーザーをフォローする"""
     profile_url = f"https://room.rakuten.co.jp/{user_id}"
     try:
-        await page.goto(profile_url, wait_until="domcontentloaded", timeout=30000)
+        try:
+            await page.goto(profile_url, wait_until="networkidle", timeout=60000)
+        except Exception:
+            await page.goto(profile_url, wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(action_delay * 1000)
 
         # クッキー期限切れ検知
@@ -185,16 +188,38 @@ async def _follow_user(page: Page, user_id: str, action_delay: int = 2) -> bool:
             try:
                 btn = page.locator(selector).first
                 if await btn.is_visible(timeout=2000):
-                    # すでにフォロー済みか確認
                     btn_text = await btn.inner_text()
+                    logger.info(f"ボタン発見: {selector} | テキスト: '{btn_text.strip()}' | ユーザー: {user_id}")
+
                     if "フォロー中" in btn_text or "フォロー済" in btn_text:
                         logger.info(f"すでにフォロー済み: {user_id}")
                         return False
 
                     await btn.click(force=True)
-                    await page.wait_for_timeout(action_delay * 1000)
-                    logger.info(f"フォロー完了: {user_id}")
-                    return True
+                    await page.wait_for_timeout(1000)
+
+                    # フォロー成功確認：ボタンが「フォロー中」に変わるか確認
+                    try:
+                        await page.wait_for_function(
+                            """() => {
+                                const btns = Array.from(document.querySelectorAll('button, [class*="follow"]'));
+                                return btns.some(b => (b.innerText || b.textContent || '').includes('フォロー中'));
+                            }""",
+                            timeout=6000,
+                        )
+                        logger.info(f"フォロー完了（確認済み）: {user_id}")
+                        return True
+                    except Exception:
+                        # ボタン状態で再確認
+                        try:
+                            after_text = await btn.inner_text()
+                            if "フォロー中" in after_text:
+                                logger.info(f"フォロー完了（ボタン変化確認）: {user_id}")
+                                return True
+                            logger.warning(f"フォロー後ボタン未変化: '{after_text.strip()}' → 失敗扱い: {user_id}")
+                        except Exception:
+                            logger.warning(f"フォロー後確認不能 → 失敗扱い: {user_id}")
+                        return False
             except Exception:
                 continue
 
