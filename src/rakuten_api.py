@@ -152,9 +152,15 @@ class RakutenAPI:
         try:
             time.sleep(random.uniform(1.5, 2.5))
             response = requests.get(rss_url, timeout=15, headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "application/rss+xml, application/xml, text/xml, */*",
             })
             response.raise_for_status()
+            logger.debug(f"RSS レスポンス先頭: {response.text[:300]}")
+
+            if not response.text.strip().startswith("<"):
+                logger.error(f"RSS: XMLでないレスポンス: {response.text[:300]}")
+                return []
 
             root = ET.fromstring(response.content)
             items = []
@@ -212,6 +218,9 @@ class RakutenAPI:
             logger.info(f"[RSS] キーワード「{keyword}」→ {len(items)}件取得")
             return items
 
+        except ET.ParseError as e:
+            logger.error(f"RSS XML解析失敗 {keyword}: {e} | 先頭: {response.text[:200] if 'response' in dir() else 'N/A'}")
+            return []
         except Exception as e:
             logger.error(f"RSS取得失敗 {keyword}: {e}")
             return []
