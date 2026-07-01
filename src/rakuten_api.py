@@ -1,13 +1,19 @@
 """
 楽天市場API経由で商品を検索・取得するモジュール
+
+- 通常: 楽天市場商品検索API (app.rakuten.co.jp)
+- API失敗時: 楽天検索RSSフィードにフォールバック
 """
 
 import random
+import re
 import time
+import xml.etree.ElementTree as ET
 import requests
 import logging
 from dataclasses import dataclass
 from typing import Optional
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +49,26 @@ class RakutenAPI:
         min_review_average: float = 0.0,
         sort: str = "-reviewCount",
     ) -> list[RakutenItem]:
-        """楽天市場APIで商品を検索して条件でフィルタリングして返す"""
+        """楽天市場APIで商品を検索。失敗時はRSSにフォールバック"""
 
-        # hits=30 × page ≤ 100 の制限があるため最大ページは3
+        result = self._search_via_api(keyword, hits, min_price, max_price, min_review_count, min_review_average, sort)
+        if result:
+            return result
+
+        logger.info(f"[API失敗] RSSフォールバック: {keyword}")
+        return self._search_via_rss(keyword, hits, min_price, max_price)
+
+    def _search_via_api(
+        self,
+        keyword: str,
+        hits: int,
+        min_price: Optional[int],
+        max_price: Optional[int],
+        min_review_count: int,
+        min_review_average: float,
+        sort: str,
+    ) -> list[RakutenItem]:
         page = random.randint(1, 3)
-
         params = {
             "format": "json",
             "keyword": keyword,
@@ -71,7 +92,7 @@ class RakutenAPI:
                     time.sleep(wait)
                     continue
                 if not response.ok:
-                    logger.error(f"楽天API {response.status_code}: {response.text[:300]}")
+                    logger.error(f"楽天API {response.status_code}: {response.text[:200]}")
                     return []
                 data = response.json()
                 break
@@ -82,7 +103,7 @@ class RakutenAPI:
                     continue
                 return []
         else:
-            logger.error(f"楽天API リトライ上限: {keyword}")
+            logger.warning(f"楽天API リトライ上限: {keyword}")
             return []
 
         items = []
@@ -92,7 +113,6 @@ class RakutenAPI:
             review_count = item_data.get("reviewCount", 0)
             review_average = float(item_data.get("reviewAverage", 0))
 
-            # フィルタリング
             if review_count < min_review_count:
                 continue
             if review_average < min_review_average:
@@ -119,3 +139,79 @@ class RakutenAPI:
 
         logger.info(f"[楽天API] キーワード「{keyword}」→ {len(items)}件取得")
         return items
+
+    def _search_via_rss(
+        self,
+        keyword: str,
+        hits: int,
+        min_price: Optional[int] = None,
+        max_price: Optional[int] = None,
+    ) -> list[RakutenItem]:
+        """楽天検索RSSフィードから商品を取得"""
+        rss_url = f"https://search.rakuten.co.jp/search/mall/{quote(keyword)}/?f=1&s=6&v=3"
+        try:
+            time.sleep(random.uniform(1.5, 2.5))
+            response = requests.get(rss_url, timeout=15, headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+            })
+            response.raise_for_status()
+
+            root = ET.fromstring(response.content)
+            items = []
+
+            for entry in root.findall(".//item"):
+                title = entry.findtext("title", "").strip()
+                link = entry.findtext("link", "").strip()
+                description = entry.findtext("description", "")
+
+                if not link or not title:
+                    continue
+
+                # item.rakuten.co.jp/{shop}/{code}/ からコードを抽出
+                m = re.search(r"item\.rakuten\.co\.jp/([^/]+)/([^/?#]+)", link)
+                if not m:
+                    continue
+                shop_code = m.group(1)
+                item_code_part = m.group(2)
+                item_code = f"{shop_code}:{item_code_part}"
+
+                # 価格を説明HTMLから抽出
+                price = 0
+                price_m = re.search(r"([\d,]+)\s*円", description)
+                if price_m:
+                    try:
+                        price = int(price_m.group(1).replace(",", ""))
+                    except ValueError:
+                        pass
+
+                if min_price and price and price < min_price:
+                    continue
+                if max_price and price and price > max_price:
+                    continue
+
+                # 画像URLを説明HTMLから抽出
+                img_m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', description)
+                image_url = img_m.group(1) if img_m else ""
+
+                items.append(RakutenItem(
+                    item_code=item_code,
+                    item_name=title,
+                    item_price=price,
+                    item_url=link,
+                    image_url=image_url,
+                    shop_name=shop_code,
+                    review_count=0,
+                    review_average=0.0,
+                    catch_copy="",
+                    item_caption="",
+                ))
+
+                if len(items) >= hits:
+                    break
+
+            logger.info(f"[RSS] キーワード「{keyword}」→ {len(items)}件取得")
+            return items
+
+        except Exception as e:
+            logger.error(f"RSS取得失敗 {keyword}: {e}")
+            return []
