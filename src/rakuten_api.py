@@ -27,7 +27,7 @@ class RakutenItem:
 
 
 class RakutenAPI:
-    BASE_URL = "https://app.rakuten.co.jp/services/api/IchibaItem/Search/20170706"
+    BASE_URL = "https://app.rakuten.co.jp/services/api/IchibaItem/Search/20250801"
 
     def __init__(self, app_id: str, access_key: str):
         self.app_id = app_id
@@ -62,13 +62,26 @@ class RakutenAPI:
         if max_price:
             params["maxPrice"] = max_price
 
-        try:
-            time.sleep(random.uniform(1.5, 2.5))
-            response = requests.get(self.BASE_URL, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-        except requests.RequestException as e:
-            logger.error(f"楽天API呼び出し失敗: {e}")
+        for attempt in range(3):
+            try:
+                time.sleep(random.uniform(1.5, 2.5))
+                response = requests.get(self.BASE_URL, params=params, timeout=10)
+                if response.status_code == 503:
+                    wait = 10 * (2 ** attempt)
+                    logger.warning(f"楽天API 503 → {wait}秒後にリトライ ({attempt+1}/3): {keyword}")
+                    time.sleep(wait)
+                    continue
+                response.raise_for_status()
+                data = response.json()
+                break
+            except requests.RequestException as e:
+                logger.error(f"楽天API呼び出し失敗: {e}")
+                if attempt < 2:
+                    time.sleep(10)
+                    continue
+                return []
+        else:
+            logger.error(f"楽天API 503 が3回続いたためスキップ: {keyword}")
             return []
 
         items = []
@@ -84,7 +97,7 @@ class RakutenAPI:
             if review_average < min_review_average:
                 continue
 
-            images = item_data.get("mediumImageUrls", [])
+            images = item_data.get("mediumImageUrls") or item_data.get("smallImageUrls") or []
             image_url = images[0].get("imageUrl", "") if images else ""
 
             items.append(RakutenItem(
