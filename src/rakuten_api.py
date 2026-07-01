@@ -27,7 +27,7 @@ class RakutenItem:
 
 
 class RakutenAPI:
-    BASE_URL = "https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Search/20260701"
+    BASE_URL = "https://app.rakuten.co.jp/services/api/IchibaItem/Search/20170706"
 
     def __init__(self, app_id: str, access_key: str):
         self.app_id = app_id
@@ -52,7 +52,6 @@ class RakutenAPI:
             "format": "json",
             "keyword": keyword,
             "applicationId": self.app_id,
-            "accessKey": self.access_key,
             "hits": 30,
             "page": page,
             "sort": sort,
