@@ -55,7 +55,6 @@ class RakutenAPI:
             "hits": 30,
             "page": page,
             "sort": sort,
-            "imageFlag": 1,
         }
         if min_price:
             params["minPrice"] = min_price
@@ -66,12 +65,14 @@ class RakutenAPI:
             try:
                 time.sleep(random.uniform(1.5, 2.5))
                 response = requests.get(self.BASE_URL, params=params, timeout=10)
-                if response.status_code == 503:
+                if response.status_code in (503, 429):
                     wait = 10 * (2 ** attempt)
-                    logger.warning(f"楽天API 503 → {wait}秒後にリトライ ({attempt+1}/3): {keyword}")
+                    logger.warning(f"楽天API {response.status_code} → {wait}秒後にリトライ ({attempt+1}/3): {keyword}")
                     time.sleep(wait)
                     continue
-                response.raise_for_status()
+                if not response.ok:
+                    logger.error(f"楽天API {response.status_code}: {response.text[:300]}")
+                    return []
                 data = response.json()
                 break
             except requests.RequestException as e:
@@ -81,7 +82,7 @@ class RakutenAPI:
                     continue
                 return []
         else:
-            logger.error(f"楽天API 503 が3回続いたためスキップ: {keyword}")
+            logger.error(f"楽天API リトライ上限: {keyword}")
             return []
 
         items = []
