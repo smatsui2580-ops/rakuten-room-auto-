@@ -27,7 +27,7 @@ class RakutenItem:
 
 
 class RakutenAPI:
-    BASE_URL = "https://app.rakuten.co.jp/services/api/IchibaItem/Search/20250801"
+    BASE_URL = "https://app.rakuten.co.jp/services/api/IchibaItem/Search/20170706"
 
     def __init__(self, app_id: str, access_key: str):
         self.app_id = app_id
