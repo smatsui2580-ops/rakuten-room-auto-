@@ -218,20 +218,39 @@ async def _find_room_button(page: Page):
 
 async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) -> bool:
     """キャプションを入力して投稿する"""
-    # ページ読み込み完了を待機（CI環境は遅いため長めに）
+    # ページ読み込み完了を待機（ROOM はリアルタイム通知でnetworkidleになりにくい）
     try:
-        await page.wait_for_load_state("networkidle", timeout=15000)
+        await page.wait_for_load_state("networkidle", timeout=10000)
     except Exception:
-        await page.wait_for_timeout(action_delay * 1000)
+        pass
+    await page.wait_for_timeout(5000)  # Angular描画待ち
 
     # スクリーンショットでページ状態を確認
     await page.screenshot(path="logs/before_fill.png")
     logger.info(f"入力前スクリーンショット: logs/before_fill.png / URL: {page.url}")
 
-    # ページテキストをログ出力（デバッグ用）
+    # ページ上の要素を詳細ログ
     try:
-        page_text = await page.evaluate("() => document.body.innerText.slice(0, 300)")
-        logger.info(f"ページテキスト先頭: {page_text[:200]}")
+        page_text = await page.evaluate("() => document.body.innerText.slice(0, 800)")
+        logger.info(f"ページテキスト: {page_text}")
+    except Exception:
+        pass
+    try:
+        elements = await page.evaluate("""() => {
+            const results = [];
+            document.querySelectorAll('button, textarea, input, [role="button"]').forEach(el => {
+                const text = (el.innerText || el.placeholder || el.value || '').trim().slice(0, 60);
+                const cls = el.className.slice(0, 60);
+                if (text || cls) results.push(el.tagName + ' | ' + text + ' | ' + cls);
+            });
+            return results.slice(0, 20);
+        }""")
+        for e in elements:
+            logger.info(f"  DOM要素: {e}")
+        # iframeの有無
+        frames = await page.evaluate("() => Array.from(document.querySelectorAll('iframe')).map(f => f.src)")
+        if frames:
+            logger.info(f"  iframe検出: {frames}")
     except Exception:
         pass
 
