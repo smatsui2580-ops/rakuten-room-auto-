@@ -1,20 +1,21 @@
 """
-楽天市場API経由で商品を検索・取得するモジュール
+楽天市場商品を検索・取得するモジュール
 
 - 通常: Cloudflare Worker経由で楽天市場商品検索API (openapi.rakuten.co.jp)
-- API失敗時: 楽天検索RSSフィードにフォールバック
+- API失敗時: Playwrightブラウザで楽天検索ページを直接スクレイピング（IP制限回避）
 """
 
+import asyncio
 import os
 import random
 import re
 import time
-import xml.etree.ElementTree as ET
-import requests
 import logging
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import quote
+
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -52,14 +53,14 @@ class RakutenAPI:
         min_review_average: float = 0.0,
         sort: str = "-reviewCount",
     ) -> list[RakutenItem]:
-        """楽天市場APIで商品を検索。失敗時はRSSにフォールバック"""
+        """楽天市場で商品を検索。API失敗時はPlaywrightブラウザにフォールバック"""
 
         result = self._search_via_api(keyword, hits, min_price, max_price, min_review_count, min_review_average, sort)
         if result:
             return result
 
-        logger.info(f"[API失敗] RSSフォールバック: {keyword}")
-        return self._search_via_rss(keyword, hits, min_price, max_price)
+        logger.info(f"[API失敗] ブラウザ検索フォールバック: {keyword}")
+        return self._search_via_browser(keyword, hits, min_price, max_price)
 
     def _search_via_api(
         self,
@@ -99,6 +100,10 @@ class RakutenAPI:
                     logger.error(f"楽天API {response.status_code}: {response.text[:200]}")
                     return []
                 data = response.json()
+                # エラーレスポンス検知（HTTP 200でもエラーbodyを返す場合）
+                if "errors" in data:
+                    logger.error(f"楽天API エラー: {data['errors']}")
+                    return []
                 break
             except requests.RequestException as e:
                 logger.error(f"楽天API呼び出し失敗: {e}")
@@ -144,87 +149,98 @@ class RakutenAPI:
         logger.info(f"[楽天API] キーワード「{keyword}」→ {len(items)}件取得")
         return items
 
-    def _search_via_rss(
+    def _search_via_browser(
         self,
         keyword: str,
         hits: int,
         min_price: Optional[int] = None,
         max_price: Optional[int] = None,
     ) -> list[RakutenItem]:
-        """楽天検索RSSフィードから商品を取得"""
-        rss_url = f"https://search.rakuten.co.jp/search/mall/{quote(keyword)}/?f=1&s=6&v=3"
-        try:
-            time.sleep(random.uniform(1.5, 2.5))
-            response = requests.get(rss_url, timeout=15, headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "application/rss+xml, application/xml, text/xml, */*",
-            })
-            response.raise_for_status()
-            logger.debug(f"RSS レスポンス先頭: {response.text[:300]}")
+        """同期ラッパー"""
+        return asyncio.run(self._search_via_browser_async(keyword, hits, min_price, max_price))
 
-            if not response.text.strip().startswith("<"):
-                logger.error(f"RSS: XMLでないレスポンス: {response.text[:300]}")
+    async def _search_via_browser_async(
+        self,
+        keyword: str,
+        hits: int,
+        min_price: Optional[int] = None,
+        max_price: Optional[int] = None,
+    ) -> list[RakutenItem]:
+        """Playwrightで楽天市場検索ページを直接スクレイピング（IP制限なし）"""
+        from playwright.async_api import async_playwright
+
+        launch_args = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"] if os.getenv("CI") else []
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=launch_args)
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 800},
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            )
+            page = await context.new_page()
+
+            try:
+                search_url = f"https://search.rakuten.co.jp/search/mall/{quote(keyword)}/?s=6"
+                await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(3000)
+
+                for _ in range(3):
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
+                    await page.wait_for_timeout(1000)
+
+                raw_items = await page.evaluate("""() => {
+                    const seen = new Set();
+                    const items = [];
+                    document.querySelectorAll('a[href*="item.rakuten.co.jp"]').forEach(a => {
+                        const m = a.href.match(/item\\.rakuten\\.co\\.jp\\/([^/]+)\\/([^/?#]+)/);
+                        if (!m) return;
+                        const code = m[1] + ':' + m[2];
+                        if (seen.has(code)) return;
+                        seen.add(code);
+                        const card = a.closest('li, [class*="item"], [class*="product"]') || a.parentElement;
+                        const nameEl = card?.querySelector('[class*="title"], [class*="name"], h2, h3') || a;
+                        const name = (nameEl?.innerText || a.innerText || '').trim();
+                        const priceEl = card?.querySelector('[class*="price"], .important, [class*="yen"]');
+                        const priceText = priceEl?.innerText || '';
+                        const priceMatch = priceText.match(/[\\d,]+/);
+                        const price = priceMatch ? parseInt(priceMatch[0].replace(/,/g, '')) : 0;
+                        const imgEl = card?.querySelector('img');
+                        const imgUrl = imgEl?.src || '';
+                        if (name.length > 3) {
+                            items.push({ item_code: code, item_name: name, item_price: price,
+                                         item_url: a.href, image_url: imgUrl, shop_name: m[1] });
+                        }
+                    });
+                    return items;
+                }""")
+
+                items = []
+                for r in raw_items:
+                    price = r.get("item_price", 0)
+                    if min_price and price and price < min_price:
+                        continue
+                    if max_price and price and price > max_price:
+                        continue
+                    items.append(RakutenItem(
+                        item_code=r["item_code"],
+                        item_name=r["item_name"],
+                        item_price=price,
+                        item_url=r["item_url"],
+                        image_url=r.get("image_url", ""),
+                        shop_name=r["shop_name"],
+                        review_count=0,
+                        review_average=0.0,
+                        catch_copy="",
+                        item_caption="",
+                    ))
+                    if len(items) >= hits:
+                        break
+
+                logger.info(f"[ブラウザ検索] キーワード「{keyword}」→ {len(items)}件取得")
+                return items
+
+            except Exception as e:
+                logger.error(f"ブラウザ検索失敗 {keyword}: {e}")
                 return []
-
-            root = ET.fromstring(response.content)
-            items = []
-
-            for entry in root.findall(".//item"):
-                title = entry.findtext("title", "").strip()
-                link = entry.findtext("link", "").strip()
-                description = entry.findtext("description", "")
-
-                if not link or not title:
-                    continue
-
-                # item.rakuten.co.jp/{shop}/{code}/ からコードを抽出
-                m = re.search(r"item\.rakuten\.co\.jp/([^/]+)/([^/?#]+)", link)
-                if not m:
-                    continue
-                shop_code = m.group(1)
-                item_code_part = m.group(2)
-                item_code = f"{shop_code}:{item_code_part}"
-
-                # 価格を説明HTMLから抽出
-                price = 0
-                price_m = re.search(r"([\d,]+)\s*円", description)
-                if price_m:
-                    try:
-                        price = int(price_m.group(1).replace(",", ""))
-                    except ValueError:
-                        pass
-
-                if min_price and price and price < min_price:
-                    continue
-                if max_price and price and price > max_price:
-                    continue
-
-                # 画像URLを説明HTMLから抽出
-                img_m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', description)
-                image_url = img_m.group(1) if img_m else ""
-
-                items.append(RakutenItem(
-                    item_code=item_code,
-                    item_name=title,
-                    item_price=price,
-                    item_url=link,
-                    image_url=image_url,
-                    shop_name=shop_code,
-                    review_count=0,
-                    review_average=0.0,
-                    catch_copy="",
-                    item_caption="",
-                ))
-
-                if len(items) >= hits:
-                    break
-
-            logger.info(f"[RSS] キーワード「{keyword}」→ {len(items)}件取得")
-            return items
-
-        except ET.ParseError as e:
-            logger.error(f"RSS XML解析失敗 {keyword}: {e} | 先頭: {response.text[:200] if 'response' in dir() else 'N/A'}")
-            return []
-        except Exception as e:
-            logger.error(f"RSS取得失敗 {keyword}: {e}")
-            return []
+            finally:
+                await browser.close()
