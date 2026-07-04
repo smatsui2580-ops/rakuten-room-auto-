@@ -191,11 +191,22 @@ async def _find_room_button(page: Page):
 
 async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) -> bool:
     """キャプションを入力して投稿する"""
-    await page.wait_for_timeout(action_delay * 1000)
+    # ページ読み込み完了を待機（CI環境は遅いため長めに）
+    try:
+        await page.wait_for_load_state("networkidle", timeout=15000)
+    except Exception:
+        await page.wait_for_timeout(action_delay * 1000)
 
     # スクリーンショットでページ状態を確認
     await page.screenshot(path="logs/before_fill.png")
     logger.info(f"入力前スクリーンショット: logs/before_fill.png / URL: {page.url}")
+
+    # ページテキストをログ出力（デバッグ用）
+    try:
+        page_text = await page.evaluate("() => document.body.innerText.slice(0, 300)")
+        logger.info(f"ページテキスト先頭: {page_text[:200]}")
+    except Exception:
+        pass
 
     # テキストエリアを探す前に投稿済み状態を早期検知
     try:
@@ -224,6 +235,7 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
         'textarea[placeholder*="オススメポイント"]',
         'textarea[placeholder*="好きな所"]',
         'textarea[placeholder*="コメント"]',
+        'textarea[ng-model]',
         'textarea',
     ]
 
@@ -231,7 +243,7 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
     for selector in textarea_selectors:
         try:
             t = page.locator(selector).first
-            if await t.is_visible(timeout=1500):
+            if await t.is_visible(timeout=5000):
                 await t.scroll_into_view_if_needed()
                 await t.click()
                 await page.wait_for_timeout(500)
