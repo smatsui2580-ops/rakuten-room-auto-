@@ -114,6 +114,33 @@ async def post_to_room(
                 await page.wait_for_load_state("domcontentloaded")
                 await page.wait_for_timeout(action_delay * 1000)
 
+            # /mix/out は投稿できない商品
+            if "/mix/out" in page.url:
+                logger.warning(f"投稿不可商品 (mix/out): {page.url}")
+                await browser.close()
+                return False
+
+            # /mix/items ページで「コレ！する」ボタンをクリック → テキストエリアを表示
+            if "/mix/items" in page.url or "/mix" in page.url:
+                kore_selectors = [
+                    'button:has-text("コレ！する")',
+                    'button:has-text("コレにする")',
+                    'a:has-text("コレ！する")',
+                    'button.collect-btn',
+                    '[class*="collect"]:not([class*="collected"]):not([class*="unfollow"])',
+                ]
+                for selector in kore_selectors:
+                    try:
+                        btn = page.locator(selector).first
+                        if await btn.is_visible(timeout=3000):
+                            btn_text = await btn.inner_text()
+                            logger.info(f"コレ！ボタン発見: {selector} | テキスト: '{btn_text.strip()}'")
+                            await btn.click(force=True)
+                            await page.wait_for_timeout(2000)
+                            break
+                    except Exception:
+                        continue
+
             # ログインページに飛んだ場合はクッキー期限切れ → 自動再ログイン
             if "id.rakuten" in page.url or ("login" in page.url and "room" not in page.url):
                 logger.warning(f"クッキー期限切れを検知: {page.url}")
