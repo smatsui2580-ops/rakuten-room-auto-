@@ -1,10 +1,11 @@
 """
 楽天市場API経由で商品を検索・取得するモジュール
 
-- 通常: 楽天市場商品検索API (app.rakuten.co.jp)
+- 通常: Cloudflare Worker経由で楽天市場商品検索API (openapi.rakuten.co.jp)
 - API失敗時: 楽天検索RSSフィードにフォールバック
 """
 
+import os
 import random
 import re
 import time
@@ -32,26 +33,14 @@ class RakutenItem:
     item_caption: str
 
 
-GENRE_MAP = {
-    "インテリア": 215783,
-    "キッチン": 100371,
-    "雑貨": 558885,
-    "生活雑貨": 101213,
-    "北欧": 215783,
-    "アロマ": 101213,
-    "照明": 215783,
-    "収納": 215783,
-    "観葉植物": 100804,
-    "食器": 100371,
-}
-
 class RakutenAPI:
-    BASE_URL = "https://app.rakuten.co.jp/services/api/IchibaItem/Search/20170706"
-    RANKING_URL = "https://app.rakuten.co.jp/services/api/IchibaRanking/Genre/20170628"
+    CF_WORKER_URL = "https://rakuten-proxy.matsuisho.workers.dev"
 
     def __init__(self, app_id: str, access_key: str):
         self.app_id = app_id
         self.access_key = access_key
+        self.auth_token = os.getenv("CF_AUTH_TOKEN", "")
+        self.worker_url = os.getenv("CF_WORKER_URL", self.CF_WORKER_URL)
 
     def search_items(
         self,
@@ -69,12 +58,7 @@ class RakutenAPI:
         if result:
             return result
 
-        logger.info(f"[API失敗] ランキングAPIフォールバック: {keyword}")
-        result = self._search_via_ranking(keyword, hits, min_price, max_price)
-        if result:
-            return result
-
-        logger.info(f"[ランキングAPI失敗] RSSフォールバック: {keyword}")
+        logger.info(f"[API失敗] RSSフォールバック: {keyword}")
         return self._search_via_rss(keyword, hits, min_price, max_price)
 
     def _search_via_api(
@@ -91,7 +75,6 @@ class RakutenAPI:
         params = {
             "format": "json",
             "keyword": keyword,
-            "applicationId": self.app_id,
             "hits": 30,
             "page": page,
             "sort": sort,
@@ -101,10 +84,12 @@ class RakutenAPI:
         if max_price:
             params["maxPrice"] = max_price
 
+        headers = {"X-Auth-Token": self.auth_token} if self.auth_token else {}
+
         for attempt in range(3):
             try:
                 time.sleep(random.uniform(1.5, 2.5))
-                response = requests.get(self.BASE_URL, params=params, timeout=10)
+                response = requests.get(self.worker_url, params=params, headers=headers, timeout=15)
                 if response.status_code in (503, 429):
                     wait = 10 * (2 ** attempt)
                     logger.warning(f"楽天API {response.status_code} → {wait}秒後にリトライ ({attempt+1}/3): {keyword}")
@@ -157,68 +142,6 @@ class RakutenAPI:
                 break
 
         logger.info(f"[楽天API] キーワード「{keyword}」→ {len(items)}件取得")
-        return items
-
-    def _search_via_ranking(
-        self,
-        keyword: str,
-        hits: int,
-        min_price: Optional[int] = None,
-        max_price: Optional[int] = None,
-    ) -> list[RakutenItem]:
-        """楽天ランキングAPIから商品を取得（ジャンルID推定）"""
-        genre_id = 0
-        for k, gid in GENRE_MAP.items():
-            if k in keyword:
-                genre_id = gid
-                break
-
-        params = {
-            "format": "json",
-            "applicationId": self.app_id,
-            "genreId": genre_id,
-            "hits": 30,
-            "page": random.randint(1, 3),
-        }
-        try:
-            time.sleep(random.uniform(1.5, 2.5))
-            response = requests.get(self.RANKING_URL, params=params, timeout=10)
-            if not response.ok:
-                logger.error(f"ランキングAPI {response.status_code}: {response.text[:200]}")
-                return []
-            data = response.json()
-        except Exception as e:
-            logger.error(f"ランキングAPI失敗: {e}")
-            return []
-
-        items = []
-        for entry in data.get("Items", []):
-            item_data = entry.get("Item", {})
-            price = item_data.get("itemPrice", 0)
-            if min_price and price < min_price:
-                continue
-            if max_price and price > max_price:
-                continue
-
-            images = item_data.get("mediumImageUrls") or item_data.get("smallImageUrls") or []
-            image_url = images[0].get("imageUrl", "") if images else ""
-
-            items.append(RakutenItem(
-                item_code=item_data.get("itemCode", ""),
-                item_name=item_data.get("itemName", ""),
-                item_price=price,
-                item_url=item_data.get("itemUrl", ""),
-                image_url=image_url,
-                shop_name=item_data.get("shopName", ""),
-                review_count=item_data.get("reviewCount", 0),
-                review_average=float(item_data.get("reviewAverage", 0)),
-                catch_copy=item_data.get("catchcopy", ""),
-                item_caption=item_data.get("itemCaption", "")[:300],
-            ))
-            if len(items) >= hits:
-                break
-
-        logger.info(f"[ランキングAPI] ジャンル{genre_id}({keyword}) → {len(items)}件取得")
         return items
 
     def _search_via_rss(
