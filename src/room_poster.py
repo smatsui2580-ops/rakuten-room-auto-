@@ -88,22 +88,25 @@ async def post_to_room(
                 await browser.close()
                 return False
 
-            # ROOM投稿URLに直接移動（商品コードがある場合）
-            if item_code:
-                room_url = _build_room_url(item_code)
-                logger.info(f"ROOM投稿ページに直接移動: {room_url}")
-                await page.goto(room_url, wait_until="domcontentloaded", timeout=60000)
-            else:
-                logger.info(f"商品ページに移動: {item_url[:60]}...")
-                await page.goto(item_url, wait_until="domcontentloaded", timeout=60000)
-                await page.wait_for_timeout(action_delay * 1000)
-                room_btn = await _find_room_button(page)
-                if not room_btn:
-                    logger.error("ROOMに追加ボタンが見つかりません")
-                    await browser.close()
-                    return False
-                await room_btn.click()
-                logger.info("ROOMに追加ボタンをクリック")
+            # 楽天市場の商品ページに移動してROOMに追加ボタンをクリック
+            # （/mix?itemcode= 直接URLは投稿フォームが表示されなくなったためitem_urlを使用）
+            logger.info(f"商品ページに移動: {item_url[:80]}...")
+            await page.goto(item_url, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(action_delay * 1000)
+
+            room_btn = await _find_room_button(page)
+            if not room_btn:
+                logger.error(f"ROOMに追加ボタンが見つかりません: {item_url[:80]}")
+                try:
+                    links = await page.evaluate("""() => Array.from(document.querySelectorAll('a, button')).slice(0, 15).map(el => el.innerText?.trim().slice(0, 40) + ' | ' + (el.href || el.className).slice(0, 40))""")
+                    for l in links:
+                        logger.info(f"  ページ要素: {l}")
+                except Exception:
+                    pass
+                await browser.close()
+                return False
+            await room_btn.click()
+            logger.info("ROOMに追加ボタンをクリック")
 
             await page.wait_for_timeout(action_delay * 1000)
 
@@ -114,32 +117,13 @@ async def post_to_room(
                 await page.wait_for_load_state("domcontentloaded")
                 await page.wait_for_timeout(action_delay * 1000)
 
+            logger.info(f"遷移後URL: {page.url}")
+
             # /mix/out は投稿できない商品
             if "/mix/out" in page.url:
                 logger.warning(f"投稿不可商品 (mix/out): {page.url}")
                 await browser.close()
                 return False
-
-            # /mix/items ページで「コレ！する」ボタンをクリック → テキストエリアを表示
-            if "/mix/items" in page.url or "/mix" in page.url:
-                kore_selectors = [
-                    'button:has-text("コレ！する")',
-                    'button:has-text("コレにする")',
-                    'a:has-text("コレ！する")',
-                    'button.collect-btn',
-                    '[class*="collect"]:not([class*="collected"]):not([class*="unfollow"])',
-                ]
-                for selector in kore_selectors:
-                    try:
-                        btn = page.locator(selector).first
-                        if await btn.is_visible(timeout=3000):
-                            btn_text = await btn.inner_text()
-                            logger.info(f"コレ！ボタン発見: {selector} | テキスト: '{btn_text.strip()}'")
-                            await btn.click(force=True)
-                            await page.wait_for_timeout(2000)
-                            break
-                    except Exception:
-                        continue
 
             # ログインページに飛んだ場合はクッキー期限切れ → 自動再ログイン
             if "id.rakuten" in page.url or ("login" in page.url and "room" not in page.url):
