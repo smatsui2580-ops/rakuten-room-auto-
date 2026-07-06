@@ -7,7 +7,6 @@ Playwrightで楽天ROOMに投稿するモジュール
 - ログインとROOM投稿を1つのブラウザセッションで完結
 """
 
-import asyncio
 import json
 import logging
 import os
@@ -36,7 +35,7 @@ async def _save_cookies(context: BrowserContext):
     logger.info("クッキーを保存しました")
 
 
-async def _ensure_logged_in(page: Page, context: BrowserContext) -> bool:
+async def _ensure_logged_in() -> bool:
     """クッキーがあればそのまま使う。なければログインを促す"""
 
     # クッキーがある場合はログイン確認をスキップしてそのまま進む
@@ -51,10 +50,6 @@ async def _ensure_logged_in(page: Page, context: BrowserContext) -> bool:
     print("="*50 + "\n")
     return False
 
-
-def _build_room_url(item_code: str) -> str:
-    from urllib.parse import quote
-    return f"https://room.rakuten.co.jp/mix?itemcode={quote(item_code, safe='')}&scid=we_room_upc60"
 
 
 async def post_to_room(
@@ -83,7 +78,7 @@ async def post_to_room(
         page = await context.new_page()
 
         try:
-            logged_in = await _ensure_logged_in(page, context)
+            logged_in = await _ensure_logged_in()
             if not logged_in:
                 await browser.close()
                 return False
@@ -202,23 +197,16 @@ async def _find_room_button(page: Page):
 
 async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) -> bool:
     """キャプションを入力して投稿する"""
-    # ページ読み込み完了を待機（ROOM はリアルタイム通知でnetworkidleになりにくい）
     try:
         await page.wait_for_load_state("networkidle", timeout=10000)
     except Exception:
         pass
     await page.wait_for_timeout(5000)  # Angular描画待ち
 
-    # スクリーンショットでページ状態を確認
     await page.screenshot(path="logs/before_fill.png")
-    logger.info(f"入力前スクリーンショット: logs/before_fill.png / URL: {page.url}")
+    logger.info(f"入力前 URL: {page.url}")
 
-    # ページ上の要素を詳細ログ
-    try:
-        page_text = await page.evaluate("() => document.body.innerText.slice(0, 800)")
-        logger.info(f"ページテキスト: {page_text}")
-    except Exception:
-        pass
+    # DOM要素ログ（デバッグ）
     try:
         elements = await page.evaluate("""() => {
             const results = [];
@@ -231,16 +219,14 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
         }""")
         for e in elements:
             logger.info(f"  DOM要素: {e}")
-        # iframeの有無
-        frames = await page.evaluate("() => Array.from(document.querySelectorAll('iframe')).map(f => f.src)")
-        if frames:
-            logger.info(f"  iframe検出: {frames}")
+        frames_srcs = await page.evaluate("() => Array.from(document.querySelectorAll('iframe')).map(f => f.src)")
+        if frames_srcs:
+            logger.info(f"  iframe検出: {frames_srcs}")
     except Exception:
         pass
 
-    # テキストエリアを探す前に投稿済み状態を早期検知
+    # 投稿済み早期検知
     try:
-        # ① 「すでにコレ！している商品です」ダイアログ
         already = page.locator('text=すでにコレ')
         if await already.is_visible(timeout=1500):
             logger.warning("すでにコレ！済み（ダイアログ検知） → スキップ")
@@ -252,7 +238,6 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
     except Exception:
         pass
     try:
-        # ② 「この商品を削除」ボタンが出ている = 編集モード = すでに収集済み
         delete_btn = page.locator('a:has-text("この商品を削除"), button:has-text("この商品を削除")')
         if await delete_btn.is_visible(timeout=1500):
             logger.warning("編集モード検知（この商品を削除ボタンあり） → 重複スキップ")
@@ -260,7 +245,7 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
     except Exception:
         pass
 
-    # キャプション入力欄を探す（ROOM投稿ページのテキストエリア）
+    # テキストエリアを探す（メインページ → iframe の順）
     textarea_selectors = [
         'textarea[placeholder*="オススメポイント"]',
         'textarea[placeholder*="好きな所"]',
@@ -269,69 +254,90 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
         'textarea',
     ]
 
-    filled = False
+    textarea = None
+
+    # メインページで探す
     for selector in textarea_selectors:
         try:
             t = page.locator(selector).first
-            if await t.is_visible(timeout=5000):
-                await t.scroll_into_view_if_needed()
-                await t.click()
-                await page.wait_for_timeout(500)
-
-                # 最大3回リトライ（Angular初期化待ち）
-                for attempt in range(3):
-                    await t.fill(caption)
-                    await page.wait_for_timeout(300)
-
-                    await page.evaluate(
-                        """([sel, text]) => {
-                            const el = document.querySelector(sel);
-                            if (!el) return;
-                            // ネイティブセッターでDOM値を設定
-                            const setter = Object.getOwnPropertyDescriptor(
-                                window.HTMLTextAreaElement.prototype, 'value'
-                            ).set;
-                            setter.call(el, text);
-                            el.dispatchEvent(new Event('input', { bubbles: true }));
-                            el.dispatchEvent(new Event('change', { bubbles: true }));
-                            // AngularJSのng-modelを直接更新
-                            try {
-                                if (window.angular) {
-                                    const scope = window.angular.element(el).scope();
-                                    if (scope) {
-                                        const ngModel = el.getAttribute('ng-model');
-                                        if (ngModel) {
-                                            scope.$eval(ngModel + ' = _v', {_v: text});
-                                        }
-                                        scope.$apply();
-                                    }
-                                }
-                            } catch(e) {}
-                        }""",
-                        [selector, caption]
-                    )
-                    await page.wait_for_timeout(500)
-
-                    actual_value = await t.input_value()
-                    if len(actual_value) > 0:
-                        break
-                    logger.debug(f"入力値0のためリトライ ({attempt+1}/3)")
-                    await page.wait_for_timeout(1500)
-
-                logger.info(f"キャプション入力: セレクタ={selector}, 入力文字数={len(actual_value)}")
-
-                await page.wait_for_timeout(action_delay * 1000)
-                if len(actual_value) > 0:
-                    filled = True
-                    break
-        except Exception as e:
-            logger.debug(f"テキストエリア試行失敗 {selector}: {e}")
+            if await t.is_visible(timeout=3000):
+                textarea = t
+                logger.info(f"テキストエリア発見（メインページ）: {selector}")
+                break
+        except Exception:
             continue
 
-    if not filled:
+    # iframeの中を探す
+    if textarea is None:
+        for frame in page.frames:
+            if frame.url and 'rakuten' in frame.url and frame != page.main_frame:
+                logger.info(f"フレーム確認: {frame.url}")
+                for selector in textarea_selectors:
+                    try:
+                        t = frame.locator(selector).first
+                        if await t.is_visible(timeout=2000):
+                            textarea = t
+                            logger.info(f"テキストエリア発見（iframe）: {selector} / {frame.url}")
+                            break
+                    except Exception:
+                        continue
+                if textarea:
+                    break
+
+    if textarea is None:
         logger.warning("テキストエリアへの入力に失敗しました")
         await page.screenshot(path="logs/fill_failed.png")
         return False
+
+    # キャプション入力
+    await textarea.scroll_into_view_if_needed()
+    await textarea.click()
+    await page.wait_for_timeout(500)
+
+    # まず fill() を試す（速い）
+    await textarea.fill(caption)
+    await page.wait_for_timeout(500)
+    actual_value = await textarea.input_value()
+
+    # fill() でAngularが拾わない場合は press_sequentially() で1文字ずつ入力
+    if len(actual_value) == 0:
+        logger.info("fill() 失敗 → press_sequentially() にフォールバック")
+        await textarea.fill("")
+        await page.wait_for_timeout(200)
+        await textarea.press_sequentially(caption, delay=10)
+        await page.wait_for_timeout(500)
+        actual_value = await textarea.input_value()
+
+    # press_sequentially でも0の場合 → Angular イベントを強制発火
+    if len(actual_value) == 0:
+        logger.info("press_sequentially() 失敗 → JS native setter にフォールバック")
+        await page.evaluate("""([text]) => {
+            const el = document.querySelector('textarea');
+            if (!el) return;
+            const setter = Object.getOwnPropertyDescriptor(
+                window.HTMLTextAreaElement.prototype, 'value'
+            ).set;
+            setter.call(el, text);
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            try {
+                if (window.angular) {
+                    const scope = window.angular.element(el).scope();
+                    if (scope) { scope.$apply(); }
+                }
+            } catch(e) {}
+        }""", [caption])
+        await page.wait_for_timeout(500)
+        actual_value = await textarea.input_value()
+
+    logger.info(f"キャプション入力: {len(actual_value)}文字")
+
+    if len(actual_value) == 0:
+        logger.warning("テキストエリアへの入力に失敗しました")
+        await page.screenshot(path="logs/fill_failed.png")
+        return False
+
+    await page.wait_for_timeout(action_delay * 1000)
 
     # 「完了」ボタンをクリック → これが投稿ボタン（キャプション入力済みの場合）
     try:
