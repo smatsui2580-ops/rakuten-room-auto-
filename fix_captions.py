@@ -107,9 +107,9 @@ def generate_caption(item_info: dict, caption_cfg: dict) -> str:
         return f"{name}\n{price_str}\n\nおすすめの商品です♡ #楽天ROOM"
 
 
-async def process_item(page: Page, shop: str, code: str, caption_cfg: dict, action_delay: int, dry_run: bool) -> str:
+async def process_item(page: Page, context, shop: str, code: str, caption_cfg: dict, action_delay: int, dry_run: bool) -> str:
     """
-    楽天商品ページ → ROOMに追加リンク取得 → ROOM編集フォームでキャプション追加
+    楽天商品ページ → ROOMに追加ボタンをクリック → ROOM編集フォームでキャプション追加
     戻り値: "skipped" / "fixed" / "failed" / "no_room_btn"
     """
     item_url = f"https://item.rakuten.co.jp/{shop}/{code}/"
@@ -134,39 +134,44 @@ async def process_item(page: Page, shop: str, code: str, caption_cfg: dict, acti
         };
     }""")
 
-    # ROOMに追加リンクのhrefを取得（数値itemcodeが含まれている）
-    room_href = None
+    # ROOMに追加ボタンをクリック（hrefではなくクリックして/mix/collectに遷移させる）
+    room_btn = None
     for selector in [
         'a[href*="room.rakuten.co.jp/mix"]',
         'a[href*="room.rakuten.co.jp"]',
+        'button:has-text("ROOMに追加")',
+        'a:has-text("ROOMに追加")',
+        'img[alt*="ROOM"]',
     ]:
         try:
-            link = page.locator(selector).first
-            if await link.is_visible(timeout=3000):
-                href = await link.get_attribute("href")
-                if href and "room.rakuten.co.jp" in href:
-                    room_href = href
-                    logger.info(f"  ROOMリンク発見: {href[:80]}")
-                    break
+            btn = page.locator(selector).first
+            if await btn.is_visible(timeout=3000):
+                room_btn = btn
+                logger.info(f"  ROOMボタン発見: {selector}")
+                break
         except Exception:
             continue
 
-    if not room_href:
+    if not room_btn:
         logger.info(f"  ROOMに追加ボタンが見つかりません: {shop}/{code}")
         return "no_room_btn"
 
-    # ROOMフォームページに移動
-    try:
-        await page.goto(room_href, wait_until="domcontentloaded", timeout=60000)
+    # ボタンをクリックして遷移
+    await room_btn.click()
+    await page.wait_for_timeout(action_delay * 1000)
+
+    # 新しいタブが開いた場合は切り替え
+    all_pages = context.pages
+    if len(all_pages) > 1:
+        page = all_pages[-1]
+        await page.wait_for_load_state("domcontentloaded")
         await page.wait_for_timeout(action_delay * 1000)
-        try:
-            await page.wait_for_load_state("networkidle", timeout=8000)
-        except Exception:
-            pass
-        await page.wait_for_timeout(3000)
-    except Exception as e:
-        logger.warning(f"  ROOMページ移動失敗: {e}")
-        return "failed"
+
+    try:
+        await page.wait_for_load_state("networkidle", timeout=8000)
+    except Exception:
+        pass
+    await page.wait_for_timeout(3000)
 
     current_url = page.url
     logger.info(f"  ROOM URL: {current_url}")
@@ -313,7 +318,7 @@ async def main_async(days: int, dry_run: bool):
                 continue
 
             shop, code = item_code.split(":", 1)
-            result = await process_item(page, shop, code, caption_cfg, action_delay, dry_run)
+            result = await process_item(page, context, shop, code, caption_cfg, action_delay, dry_run)
 
             if result == "session_expired":
                 logger.error("セッション切れ → 処理終了")
