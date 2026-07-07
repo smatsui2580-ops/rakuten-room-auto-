@@ -2,8 +2,9 @@
 楽天ROOMの既存投稿にキャプションを遡って追加するスクリプト
 
 使い方:
-  python fix_captions.py            # キャプションなし投稿を検出して追加
-  python fix_captions.py --dry-run  # 確認のみ（実際には書き込まない）
+  python3 fix_captions.py              # 直近7日分を処理
+  python3 fix_captions.py --days=14   # 直近14日分を処理
+  python3 fix_captions.py --dry-run   # 確認のみ（書き込みしない）
 """
 
 import asyncio
@@ -11,11 +12,13 @@ import json
 import logging
 import os
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote
 
 import yaml
 from dotenv import load_dotenv
-from playwright.async_api import async_playwright, Page, BrowserContext
+from playwright.async_api import async_playwright, Page
 
 load_dotenv()
 logging.basicConfig(
@@ -29,7 +32,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 COOKIES_FILE = Path("data/rakuten_cookies.json")
-MY_ROOM_URL = "https://room.rakuten.co.jp/room_1988b87b48/items"
 
 
 def load_config():
@@ -40,163 +42,45 @@ def load_config():
 def load_cookies():
     if not COOKIES_FILE.exists():
         return []
-    try:
-        return json.loads(COOKIES_FILE.read_text(encoding="utf-8"))
-    except Exception:
+    return json.loads(COOKIES_FILE.read_text(encoding="utf-8"))
+
+
+def get_recent_item_codes(days: int) -> list[str]:
+    """posted_items.json から直近N日以内に投稿した商品コードを返す"""
+    path = Path("data/posted_items.json")
+    if not path.exists():
         return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    cutoff = datetime.now() - timedelta(days=days)
+    recent = [
+        code for code, ts in data.items()
+        if datetime.fromisoformat(ts) > cutoff
+    ]
+    # 新しい順に並べる（失敗しやすいのは最近のものから）
+    recent.sort(key=lambda c: data[c], reverse=True)
+    return recent
 
 
-async def scrape_items_without_caption(page: Page) -> list[dict]:
-    """ROOMプロフィールページをスクロールして、キャプションなし投稿を収集"""
-    logger.info(f"ROOMページをスキャン中: {MY_ROOM_URL}")
-    await page.goto(MY_ROOM_URL, wait_until="domcontentloaded", timeout=60000)
-    await page.wait_for_timeout(3000)
-
-    no_caption_items = []
-    page_num = 0
-    prev_count = 0
-
-    while True:
-        page_num += 1
-
-        # スクロールして全アイテムを読み込む
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await page.wait_for_timeout(2000)
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await page.wait_for_timeout(2000)
-
-        # アイテムカードを取得
-        items = await page.evaluate("""() => {
-            const results = [];
-            // ROOMのアイテムカードを探す（様々なセレクタを試す）
-            const cards = document.querySelectorAll(
-                '[class*="item-card"], [class*="itemCard"], [class*="product-item"], li[class*="item"]'
-            );
-            cards.forEach(card => {
-                // 商品リンク（楽天市場またはROOM内リンク）
-                const link = card.querySelector('a[href*="item.rakuten.co.jp"], a[href*="room.rakuten.co.jp"]');
-                if (!link) return;
-
-                // キャプションテキスト（コメント部分）
-                // 価格・ショップ名・いいね数以外のテキスト
-                const allText = card.innerText || '';
-                const priceMatch = allText.match(/¥[\d,]+/);
-                const price = priceMatch ? priceMatch[0] : '';
-
-                // キャプション候補テキスト
-                const captionEl = card.querySelector(
-                    '[class*="comment"], [class*="caption"], [class*="description"], [class*="text"], p'
-                );
-                const captionText = captionEl ? captionEl.innerText.trim() : '';
-
-                // 価格行・ショップ名・ハート数を除いたテキストがキャプション
-                // 非常に短い（20文字以下）または空ならキャプションなし
-                const hasCaption = captionText.length > 20;
-
-                results.push({
-                    href: link.href,
-                    captionText: captionText,
-                    hasCaption: hasCaption,
-                    price: price,
-                });
-            });
-            return results;
-        }""")
-
-        # スクロールして取得できなかった場合は別セレクタで試す
-        if len(items) == 0:
-            items = await page.evaluate("""() => {
-                const results = [];
-                // 全リンクから楽天市場商品URLを拾う
-                document.querySelectorAll('a[href*="item.rakuten.co.jp"]').forEach(a => {
-                    const m = a.href.match(/item\\.rakuten\\.co\\.jp\\/([^/]+)\\/([^/?#]+)/);
-                    if (!m) return;
-                    const card = a.closest('li, article, [class*="item"], [class*="product"]') || a.parentElement?.parentElement;
-                    const text = card ? card.innerText : '';
-                    const priceMatch = text.match(/¥[\d,]+/);
-                    results.push({
-                        href: a.href,
-                        item_code: m[1] + ':' + m[2],
-                        captionText: '',
-                        hasCaption: text.length > 100,
-                        price: priceMatch ? priceMatch[0] : '',
-                    });
-                });
-                return results;
-            }""")
-
-        current_count = len(items)
-        logger.info(f"スキャン {page_num}回目: {current_count}件検出")
-
-        for item in items:
-            href = item.get("href", "")
-            if "item.rakuten.co.jp" in href:
-                import re
-                m = re.search(r"item\.rakuten\.co\.jp/([^/]+)/([^/?#]+)", href)
-                if m:
-                    item["item_code"] = m.group(1) + ":" + m.group(2)
-                    item["rakuten_url"] = href
-                else:
-                    continue
-            elif "room.rakuten.co.jp" in href:
-                item["room_url"] = href
-            else:
-                continue
-
-            if not item.get("hasCaption"):
-                no_caption_items.append(item)
-
-        # これ以上スクロールしても増えなければ終了
-        if current_count == prev_count or current_count == 0:
-            break
-        prev_count = current_count
-
-        # 「もっと見る」ボタンがあればクリック
-        try:
-            more_btn = page.locator('button:has-text("もっと見る"), a:has-text("もっと見る"), [class*="more"]').first
-            if await more_btn.is_visible(timeout=2000):
-                await more_btn.click()
-                await page.wait_for_timeout(2000)
-                continue
-        except Exception:
-            pass
-
-        if page_num >= 5:
-            break
-
-    # 重複除去（同じitem_codeが複数あれば1つに）
-    seen = set()
-    unique = []
-    for item in no_caption_items:
-        code = item.get("item_code", item.get("href", ""))
-        if code not in seen:
-            seen.add(code)
-            unique.append(item)
-
-    logger.info(f"キャプションなし投稿: {len(unique)}件")
-    return unique
-
-
-async def get_item_info_from_rakuten(page: Page, item_url: str) -> dict:
-    """楽天市場の商品ページから商品情報を取得"""
+async def get_item_info(page: Page, shop: str, code: str) -> dict:
+    """楽天市場の商品ページから商品名・価格を取得"""
+    url = f"https://item.rakuten.co.jp/{shop}/{code}/"
     try:
-        await page.goto(item_url, wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(2000)
-
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        await page.wait_for_timeout(1500)
         info = await page.evaluate("""() => {
-            const title = document.querySelector('h1, [class*="item-name"], [class*="itemName"]');
-            const price = document.querySelector('[class*="price"], .important, [class*="Price"]');
-            const desc = document.querySelector('[class*="item-desc"], [class*="itemDesc"], [class*="description"]');
+            const titleEl = document.querySelector('h1, [class*="item-name"], [class*="itemName"]');
+            const priceEl = document.querySelector('.price2 .price, [class*="Price"] .price, .item-price');
+            const descEl = document.querySelector('[class*="item-desc"], [class*="itemDesc"]');
             return {
-                item_name: title ? title.innerText.trim().slice(0, 100) : document.title.slice(0, 80),
-                item_price: price ? (price.innerText.match(/[\\d,]+/)?.[0] || '').replace(/,/g, '') : '0',
-                item_caption: desc ? desc.innerText.trim().slice(0, 200) : '',
+                item_name: titleEl ? titleEl.innerText.trim().slice(0, 100) : document.title.slice(0, 80),
+                item_price: priceEl ? priceEl.innerText.replace(/[^0-9]/g, '') : '0',
+                item_caption: descEl ? descEl.innerText.trim().slice(0, 200) : '',
             };
         }""")
         return info
     except Exception as e:
-        logger.warning(f"商品情報取得失敗 {item_url}: {e}")
-        return {"item_name": "", "item_price": "0", "item_caption": ""}
+        logger.warning(f"商品情報取得失敗 ({shop}/{code}): {e}")
+        return {"item_name": f"{shop} {code}", "item_price": "0", "item_caption": ""}
 
 
 def generate_caption(item_info: dict, caption_cfg: dict) -> str:
@@ -205,17 +89,14 @@ def generate_caption(item_info: dict, caption_cfg: dict) -> str:
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
     name = item_info.get("item_name", "")
-    price = item_info.get("item_price", "0")
-    desc = item_info.get("item_caption", "")
-
     try:
-        price_int = int(str(price).replace(",", ""))
-        price_str = f"¥{price_int:,}"
+        price_int = int(item_info.get("item_price", "0").replace(",", "") or "0")
+        price_str = f"¥{price_int:,}" if price_int else ""
     except Exception:
-        price_str = f"¥{price}"
+        price_str = ""
 
-    hashtag_instruction = (
-        f"\n- 最後に関連するハッシュタグを{caption_cfg['hashtag_count']}個追加してください（例: #コスメ #おすすめ）"
+    hashtag_instr = (
+        f"\n- 最後に関連するハッシュタグを{caption_cfg['hashtag_count']}個追加（例: #インテリア #おすすめ）"
         if caption_cfg.get("add_hashtags") else ""
     )
 
@@ -224,85 +105,114 @@ def generate_caption(item_info: dict, caption_cfg: dict) -> str:
 【商品情報】
 - 商品名: {name}
 - 価格: {price_str}
-- 商品説明（抜粋）: {desc}
+- 商品説明: {item_info.get('item_caption', '')}
 
-【文章の構成（この順番で書く）】
-1. 絵本のような世界観・情景が浮かぶ書き出し（1〜2行）
-2. 商品の見た目・素材・使い心地の描写（2〜3行）
-3. 🌟おすすめポイント を箇条書き（3〜4個、「・」で始める）
-4. 締めの一言（自分へのご褒美・贈り物・日常を豊かに、など）
+【構成】
+1. 絵本のような情景が浮かぶ書き出し（1〜2行）
+2. 見た目・素材・使い心地の描写（2〜3行）
+3. 🌟おすすめポイント を箇条書き（3〜4個）
+4. 締めの一言
 
 【ルール】
 - トーン: {caption_cfg['tone']}
-- 文字数: {caption_cfg['max_length']}文字以内（ハッシュタグ含む）
-- 絵文字を自然に使う（1行に1〜2個程度）{hashtag_instruction}
+- {caption_cfg['max_length']}文字以内{hashtag_instr}
 
-キャプションのみ出力してください（前置きや説明文は不要）。"""
+キャプションのみ出力してください。"""
 
     try:
-        message = client.messages.create(
+        msg = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=512,
             messages=[{"role": "user", "content": prompt}],
         )
-        return message.content[0].text.strip()
+        return msg.content[0].text.strip()
     except Exception as e:
         logger.error(f"キャプション生成失敗: {e}")
-        return f"{name}\n{price_str}\n\nおすすめの商品です♡"
+        return f"{name}\n{price_str}\n\nおすすめの商品です♡ #楽天ROOM"
 
 
-async def add_caption_to_room(page: Page, context: BrowserContext, item_code: str, caption: str, action_delay: int = 2) -> bool:
-    """ROOMの既存投稿にキャプションを追加・更新"""
-    from urllib.parse import quote
+async def check_and_fix_caption(page: Page, item_code: str, caption_cfg: dict, action_delay: int, dry_run: bool) -> str:
+    """
+    /mix/collect にアクセスしてキャプションが空なら生成・投稿する
+    戻り値: "skipped"（既にキャプションあり）/ "fixed"（追加成功）/ "failed"（失敗）/ "not_collected"
+    """
     room_url = f"https://room.rakuten.co.jp/mix/collect?itemcode={quote(item_code, safe='')}&scid=we_room_upc60"
 
-    logger.info(f"ROOM編集ページに移動: {item_code}")
     await page.goto(room_url, wait_until="domcontentloaded", timeout=60000)
     await page.wait_for_timeout(action_delay * 1000)
-
     try:
-        await page.wait_for_load_state("networkidle", timeout=10000)
+        await page.wait_for_load_state("networkidle", timeout=8000)
     except Exception:
         pass
-    await page.wait_for_timeout(3000)
+    await page.wait_for_timeout(2000)
 
-    # ログインページに飛んだ場合
     if "id.rakuten" in page.url or "login" in page.url:
-        logger.error("セッション切れ。クッキーを更新してください。")
-        return False
+        logger.error("セッション切れ → 処理中断")
+        return "session_expired"
 
-    # /mix/out は投稿不可商品
     if "/mix/out" in page.url:
-        logger.warning(f"投稿不可商品: {item_code}")
-        return False
+        logger.info(f"投稿不可商品: {item_code}")
+        return "not_collected"
 
     # テキストエリアを探す
-    textarea_selectors = [
-        'textarea[placeholder*="オススメポイント"]',
-        'textarea[placeholder*="好きな所"]',
-        'textarea[placeholder*="コメント"]',
-        'textarea',
-    ]
-
     textarea = None
-    for selector in textarea_selectors:
+    for selector in ['textarea[placeholder*="オススメポイント"]', 'textarea[placeholder*="好きな所"]', 'textarea']:
         try:
             t = page.locator(selector).first
-            if await t.is_visible(timeout=5000):
+            if await t.is_visible(timeout=4000):
                 textarea = t
                 break
         except Exception:
             continue
 
     if textarea is None:
-        logger.warning(f"テキストエリアが見つかりません: {item_code}")
-        return False
+        # フォームが出ていない = 未収集 or ページ構造が違う
+        logger.info(f"フォームなし（未収集か構造不明）: {item_code}")
+        return "not_collected"
 
-    # 既存のキャプションを確認（すでに入力済みならスキップ）
+    # 既存キャプションを確認
     existing = await textarea.input_value()
-    if len(existing) > 20:
-        logger.info(f"既にキャプションあり ({len(existing)}文字) → スキップ: {item_code}")
-        return True
+    if len(existing.strip()) > 20:
+        logger.info(f"キャプションあり ({len(existing)}文字) → スキップ")
+        return "skipped"
+
+    logger.info(f"キャプションなし → 生成します: {item_code}")
+
+    if dry_run:
+        logger.info("[dry-run] スキップ")
+        return "fixed"
+
+    # 商品情報を別ページで取得
+    shop, code = (item_code.split(":", 1) + [""])[:2]
+    item_info = await get_item_info(page, shop, code)
+
+    # キャプション生成
+    caption = generate_caption(item_info, caption_cfg)
+    logger.info(f"生成キャプション: {caption[:60]}... ({len(caption)}文字)")
+
+    # ROOM編集ページに戻る（商品情報取得で移動したため）
+    await page.goto(room_url, wait_until="domcontentloaded", timeout=60000)
+    await page.wait_for_timeout(action_delay * 1000)
+    try:
+        await page.wait_for_load_state("networkidle", timeout=8000)
+    except Exception:
+        pass
+    await page.wait_for_timeout(3000)
+
+    # テキストエリアを再取得
+    textarea = None
+    for selector in ['textarea[placeholder*="オススメポイント"]', 'textarea[placeholder*="好きな所"]', 'textarea']:
+        try:
+            t = page.locator(selector).first
+            if await t.is_visible(timeout=4000):
+                textarea = t
+                break
+        except Exception:
+            continue
+
+    if textarea is None:
+        logger.warning(f"再アクセス後もフォームなし: {item_code}")
+        return "failed"
 
     # キャプション入力
     await textarea.scroll_into_view_if_needed()
@@ -321,64 +231,71 @@ async def add_caption_to_room(page: Page, context: BrowserContext, item_code: st
 
     if len(actual) == 0:
         logger.warning(f"キャプション入力失敗: {item_code}")
-        return False
+        return "failed"
 
-    logger.info(f"キャプション入力: {len(actual)}文字")
     await page.wait_for_timeout(action_delay * 1000)
 
     # 完了ボタンをクリック
     try:
         done_btn = page.locator('button.collect-btn, button:has-text("完了")').first
-        if await done_btn.is_visible(timeout=3000):
-            await done_btn.scroll_into_view_if_needed()
-            await done_btn.click(force=True)
-            logger.info("完了ボタンクリック")
+        if not await done_btn.is_visible(timeout=3000):
+            logger.warning(f"完了ボタンが見つかりません: {item_code}")
+            return "failed"
 
+        await done_btn.scroll_into_view_if_needed()
+        await done_btn.click(force=True)
+        logger.info("完了ボタンクリック")
+
+        try:
+            await page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception:
+            await page.wait_for_timeout(5000)
+
+        # 成功確認
+        for indicator in ['a:has-text("my ROOM")', 'text="コレ完了"', 'text="コレ！しました"']:
             try:
-                await page.wait_for_load_state("networkidle", timeout=10000)
+                if await page.locator(indicator).first.is_visible(timeout=2000):
+                    logger.info(f"追加成功: {item_code}")
+                    return "fixed"
             except Exception:
-                await page.wait_for_timeout(5000)
+                continue
 
-            # 成功確認
-            for indicator in ['text="コレ完了"', 'text="my ROOMを見る"', 'a:has-text("my ROOM")', 'text="コレ！しました"']:
-                try:
-                    if await page.locator(indicator).first.is_visible(timeout=2000):
-                        logger.info(f"キャプション追加成功: {item_code}")
-                        return True
-                except Exception:
-                    continue
+        # テキストエリアが消えていれば成功
+        try:
+            if not await page.locator('textarea').first.is_visible(timeout=1000):
+                return "fixed"
+        except Exception:
+            pass
 
-            # テキストエリアが消えていれば成功
-            try:
-                if not await page.locator('textarea').first.is_visible(timeout=1000):
-                    logger.info(f"キャプション追加成功（フォーム消滅）: {item_code}")
-                    return True
-            except Exception:
-                pass
+        logger.warning(f"成功確認できず: {item_code}")
+        return "failed"
 
-            logger.warning(f"成功確認できず: {item_code} / URL: {page.url}")
-            return False
     except Exception as e:
         logger.error(f"完了ボタンクリック失敗: {e}")
-        return False
+        return "failed"
 
 
-async def main_async(dry_run: bool = False):
+async def main_async(days: int, dry_run: bool):
     config = load_config()
     caption_cfg = config["caption"]
-    browser_cfg = config["browser"]
-    action_delay = browser_cfg["action_delay"]
+    action_delay = config["browser"]["action_delay"]
 
     cookies = load_cookies()
     if not cookies:
         logger.error("クッキーが見つかりません。先に login.py を実行してください。")
         sys.exit(1)
 
-    headless = True if os.getenv("CI") == "true" else True  # 常にheadless
+    item_codes = get_recent_item_codes(days)
+    logger.info(f"直近{days}日の投稿: {len(item_codes)}件を確認します")
+
+    if not item_codes:
+        logger.info("対象アイテムがありません")
+        return
+
     launch_args = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"] if os.getenv("CI") else []
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=headless, args=launch_args)
+        browser = await p.chromium.launch(headless=True, args=launch_args)
         context = await browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -386,72 +303,38 @@ async def main_async(dry_run: bool = False):
         await context.add_cookies(cookies)
         page = await context.new_page()
 
-        # キャプションなし投稿をスキャン
-        no_caption_items = await scrape_items_without_caption(page)
+        stats = {"skipped": 0, "fixed": 0, "failed": 0, "not_collected": 0}
 
-        if not no_caption_items:
-            logger.info("キャプションなし投稿は見つかりませんでした")
-            await browser.close()
-            return
+        for i, item_code in enumerate(item_codes):
+            logger.info(f"[{i+1}/{len(item_codes)}] {item_code}")
+            result = await check_and_fix_caption(page, item_code, caption_cfg, action_delay, dry_run)
 
-        logger.info(f"\n{'='*50}")
-        logger.info(f"キャプションなし投稿: {len(no_caption_items)}件")
-        for item in no_caption_items:
-            logger.info(f"  {item.get('item_code', '?')} {item.get('price', '')}")
-        logger.info(f"{'='*50}\n")
+            if result == "session_expired":
+                logger.error("セッション切れ → 処理終了")
+                break
 
-        if dry_run:
-            logger.info("[dry-run] 確認のみ。実際の書き込みはスキップします。")
-            await browser.close()
-            return
-
-        # 各投稿にキャプションを追加
-        fixed = 0
-        failed = 0
-        for i, item in enumerate(no_caption_items):
-            item_code = item.get("item_code")
-            if not item_code:
-                logger.warning(f"item_code不明: {item.get('href', '?')}")
-                continue
-
-            rakuten_url = item.get("rakuten_url") or item.get("href", "")
-            shop, code = item_code.split(":", 1) if ":" in item_code else ("", item_code)
-            if not rakuten_url:
-                rakuten_url = f"https://item.rakuten.co.jp/{shop}/{code}/"
-
-            logger.info(f"\n[{i+1}/{len(no_caption_items)}] {item_code}")
-
-            # 商品情報を取得
-            item_info = await get_item_info_from_rakuten(page, rakuten_url)
-            if not item_info.get("item_name"):
-                item_info["item_name"] = f"{shop} {code}"
-
-            # キャプション生成
-            caption = generate_caption(item_info, caption_cfg)
-            logger.info(f"生成キャプション ({len(caption)}文字): {caption[:50]}...")
-
-            # ROOMに追加
-            ok = await add_caption_to_room(page, context, item_code, caption, action_delay)
-            if ok:
-                fixed += 1
-            else:
-                failed += 1
-
-            # 連続リクエストを避けるため少し待つ
-            await page.wait_for_timeout(3000)
-
-        logger.info(f"\n{'='*50}")
-        logger.info(f"完了: {fixed}件追加成功 / {failed}件失敗")
-        logger.info(f"{'='*50}")
+            stats[result] = stats.get(result, 0) + 1
+            await page.wait_for_timeout(2000)
 
         await browser.close()
 
+    logger.info(f"\n{'='*50}")
+    logger.info(f"完了: 追加={stats['fixed']} / スキップ(既存)={stats['skipped']} / 失敗={stats['failed']} / 未収集={stats['not_collected']}")
+    logger.info(f"{'='*50}")
+
 
 def main():
-    dry_run = "--dry-run" in sys.argv
-    asyncio.run(main_async(dry_run=dry_run))
+    days = 7
+    dry_run = False
+    for arg in sys.argv[1:]:
+        if arg.startswith("--days="):
+            days = int(arg.split("=")[1])
+        elif arg == "--dry-run":
+            dry_run = True
+
+    Path("logs").mkdir(exist_ok=True)
+    asyncio.run(main_async(days, dry_run))
 
 
 if __name__ == "__main__":
-    Path("logs").mkdir(exist_ok=True)
     main()
