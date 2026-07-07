@@ -286,6 +286,20 @@ async def main_async(days: int, dry_run: bool):
     caption_cfg = config["caption"]
     action_delay = config["browser"]["action_delay"]
 
+    # ROOMセッション確認 → 必要なら自動ログイン
+    email = os.getenv("RAKUTEN_EMAIL")
+    password = os.getenv("RAKUTEN_PASSWORD")
+    if email and password:
+        logger.info("自動ログインでROOMセッションを更新します...")
+        from src.auto_login import auto_login_rakuten
+        ok = await auto_login_rakuten(email, password)
+        if not ok:
+            logger.error("自動ログイン失敗。login.py を手動実行してください。")
+            sys.exit(1)
+        logger.info("自動ログイン成功")
+    else:
+        logger.warning("RAKUTEN_EMAIL/PASSWORD未設定 → 既存クッキーで試みます")
+
     cookies = load_cookies()
     if not cookies:
         logger.error("クッキーが見つかりません。先に login.py を実行してください。")
