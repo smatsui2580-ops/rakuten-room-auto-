@@ -305,7 +305,8 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
         await textarea.fill("")
         await page.wait_for_timeout(200)
         await textarea.press_sequentially(caption, delay=10)
-        await page.wait_for_timeout(2000)  # Angular処理待ち（press_sequentially後は長めに）
+        await textarea.press("Tab")  # blur → AngularJS が touched/dirty に更新
+        await page.wait_for_timeout(2000)
         actual_value = await textarea.input_value()
 
     # press_sequentially でも0の場合 → Angular イベントを強制発火
