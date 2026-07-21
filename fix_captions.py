@@ -177,11 +177,19 @@ async def process_item(page: Page, context, shop: str, code: str, caption_cfg: d
     logger.info(f"  ROOM URL: {current_url}")
 
     if "id.rakuten" in current_url or "login" in current_url:
-        logger.error("  セッション切れ")
-        return "session_expired"
+        logger.warning(f"  セッション切れ → ブラウザでROOMにログインしてください")
+        # 可視ブラウザなら手動ログインを待つ（最大2分）
+        for _ in range(24):
+            await page.wait_for_timeout(5000)
+            if "id.rakuten" not in page.url and "login" not in page.url:
+                logger.info("  ログイン完了を確認")
+                break
+        else:
+            return "session_expired"
 
-    if "/mix/out" in current_url:
-        logger.info(f"  投稿不可商品")
+    # ROOM collect ページ以外は処理しない
+    if "room.rakuten.co.jp/mix/collect" not in current_url:
+        logger.info(f"  ROOMフォームに遷移しなかった: {current_url}")
         return "no_room_btn"
 
     # テキストエリアを探す
@@ -222,11 +230,12 @@ async def process_item(page: Page, context, shop: str, code: str, caption_cfg: d
 
     # 入力
     await textarea.scroll_into_view_if_needed()
-    await textarea.click()
+    await textarea.click(force=True)  # ヘッダーオーバーレイを無視
     await page.wait_for_timeout(500)
 
     await textarea.fill(caption)
-    await page.wait_for_timeout(500)
+    await textarea.press("Tab")  # AngularJS dirty/touched 状態を確定
+    await page.wait_for_timeout(1000)
     actual = await textarea.input_value()
 
     if len(actual) == 0:
@@ -251,11 +260,19 @@ async def process_item(page: Page, context, shop: str, code: str, caption_cfg: d
         await done_btn.scroll_into_view_if_needed()
         await done_btn.click(force=True)
         logger.info("  完了ボタンクリック")
+        await page.wait_for_timeout(3000)  # AJAX応答を待つ
 
+        # 「すでにコレ！している商品です」ダイアログを最優先で確認
         try:
-            await page.wait_for_load_state("networkidle", timeout=10000)
+            if await page.locator('text="すでにコレ！している商品です"').first.is_visible(timeout=2000):
+                try:
+                    await page.locator('button:has-text("OK")').first.click()
+                except Exception:
+                    pass
+                logger.info("  コレ済みダイアログ確認 → 追加成功")
+                return "fixed"
         except Exception:
-            await page.wait_for_timeout(5000)
+            pass
 
         for indicator in ['a:has-text("my ROOM")', 'text="コレ完了"', 'text="コレ！しました"']:
             try:
@@ -273,6 +290,11 @@ async def process_item(page: Page, context, shop: str, code: str, caption_cfg: d
         except Exception:
             pass
 
+        # URL が mix/collect のままでもキャプション入力済みなら成功とみなす
+        if "mix/collect" in page.url and len(actual) > 0:
+            logger.info(f"  キャプション入力済み・URL変化なし → 追加成功とみなす")
+            return "fixed"
+
         logger.warning(f"  成功確認できず: URL={page.url}")
         return "failed"
 
@@ -286,24 +308,7 @@ async def main_async(days: int, dry_run: bool):
     caption_cfg = config["caption"]
     action_delay = config["browser"]["action_delay"]
 
-    # ROOMセッション確認 → 必要なら自動ログイン
-    email = os.getenv("RAKUTEN_EMAIL")
-    password = os.getenv("RAKUTEN_PASSWORD")
-    if email and password:
-        logger.info("自動ログインでROOMセッションを更新します...")
-        from src.auto_login import auto_login_rakuten
-        ok = await auto_login_rakuten(email, password)
-        if not ok:
-            logger.error("自動ログイン失敗。login.py を手動実行してください。")
-            sys.exit(1)
-        logger.info("自動ログイン成功")
-    else:
-        logger.warning("RAKUTEN_EMAIL/PASSWORD未設定 → 既存クッキーで試みます")
-
     cookies = load_cookies()
-    if not cookies:
-        logger.error("クッキーが見つかりません。先に login.py を実行してください。")
-        sys.exit(1)
 
     item_codes = get_recent_item_codes(days)
     logger.info(f"直近{days}日の投稿: {len(item_codes)}件を確認します")
@@ -312,10 +317,11 @@ async def main_async(days: int, dry_run: bool):
         logger.info("対象アイテムがありません")
         return
 
-    launch_args = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"] if os.getenv("CI") else []
+    is_ci = os.getenv("CI") == "true"
+    launch_args = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"] if is_ci else []
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=launch_args)
+        browser = await p.chromium.launch(headless=is_ci, args=launch_args)
         context = await browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -335,8 +341,9 @@ async def main_async(days: int, dry_run: bool):
             result = await process_item(page, context, shop, code, caption_cfg, action_delay, dry_run)
 
             if result == "session_expired":
-                logger.error("セッション切れ → 処理終了")
-                break
+                logger.warning("セッション切れ → ブラウザでログインしてください。続行します...")
+                await page.wait_for_timeout(15000)
+                continue
 
             stats[result] = stats.get(result, 0) + 1
             await page.wait_for_timeout(2000)

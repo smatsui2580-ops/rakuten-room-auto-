@@ -135,7 +135,7 @@ async def auto_login_rakuten(email: str, password: str) -> bool:
                     if await inp.is_visible(timeout=2000):
                         await inp.click()
                         await page.wait_for_timeout(300)
-                        # React SPAはnative setter+dispatchEventが必要
+                        # JS native setter でReact SPAのstateを更新
                         await page.evaluate(
                             """([sel, text]) => {
                                 const el = document.querySelector(sel);
@@ -164,22 +164,24 @@ async def auto_login_rakuten(email: str, password: str) -> bool:
 
             await page.wait_for_timeout(800)
 
-            # ログインボタンをJS経由で強制クリック（disabled状態でも動作）
+            # ログインボタンをJS経由でクリック（CIのheadlessで実績あり）
             submitted = False
             try:
-                await page.evaluate("""() => {
+                result = await page.evaluate("""() => {
                     const btn = document.querySelector('button[type="submit"]')
                                || document.querySelector('button');
-                    if (btn) btn.click();
+                    if (btn) { btn.click(); return true; }
+                    return false;
                 }""")
-                submitted = True
-                logger.info("ログインボタンJS強制クリック")
+                if result:
+                    submitted = True
+                    logger.info("ログインボタンJSクリック")
             except Exception:
                 pass
 
             if not submitted:
                 await page.keyboard.press("Enter")
-                logger.info("Enterキーでフォーム送信")
+                logger.info("Enterキーでフォーム送信（フォールバック）")
 
             await page.wait_for_load_state("domcontentloaded")
             await page.wait_for_timeout(4000)
