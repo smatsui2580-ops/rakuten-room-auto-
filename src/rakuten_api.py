@@ -180,7 +180,8 @@ class RakutenAPI:
             page = await context.new_page()
 
             try:
-                search_url = f"https://search.rakuten.co.jp/search/mall/{quote(keyword)}/?s=6"
+                page_num = random.randint(1, 4)
+                search_url = f"https://search.rakuten.co.jp/search/mall/{quote(keyword)}/?s=6&p={page_num}"
                 await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
                 await page.wait_for_timeout(3000)
 

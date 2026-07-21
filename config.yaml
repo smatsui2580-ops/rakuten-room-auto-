@@ -52,7 +52,7 @@ posting:
     - "20:00"
 
   # 同じ商品を何日後なら再投稿OKか
-  repost_interval_days: 30
+  repost_interval_days: 14
 
 # キャプション生成設定
 caption:
