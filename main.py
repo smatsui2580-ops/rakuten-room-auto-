@@ -10,6 +10,7 @@
 import asyncio
 import logging
 import os
+import random
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -73,7 +74,11 @@ def run_auto_post(config: dict, test_mode: bool = False, skip_follow: bool = Fal
     posted_count = 0
     max_posts = posting_cfg["max_posts_per_day"]
 
-    for keyword in search_cfg["keywords"]:
+    # 毎回同じ先頭キーワードから消費しないよう、順番をシャッフルする
+    keywords = list(search_cfg["keywords"])
+    random.shuffle(keywords)
+
+    for keyword in keywords:
         if posted_count >= max_posts:
             logger.info(f"本日の投稿上限 {max_posts}件 に達しました")
             break
