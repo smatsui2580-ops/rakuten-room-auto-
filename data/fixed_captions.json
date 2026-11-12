@@ -1,7 +1,8 @@
 {
   "1700400745739165": {
-    "attempts": 1,
-    "status": "failed",
-    "at": "2026-11-12T06:17:05"
+    "attempts": 2,
+    "status": "fixed",
+    "at": "2026-11-12T13:49:55",
+    "verified": true
   }
 }
