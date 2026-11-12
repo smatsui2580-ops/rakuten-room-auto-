@@ -1,0 +1,83 @@
+name: 楽天ROOM キャプション修復（既存投稿）
+
+on:
+  workflow_dispatch:
+    inputs:
+      count:
+        description: '修復する件数（新しい順）'
+        required: true
+        default: '30'
+      dry_run:
+        description: 'true なら入力して画面を保存するだけで「完了」は押さない'
+        required: false
+        default: 'false'
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    # 投稿ジョブと同じクッキーを使うので、同時実行しない
+    concurrency: rakuten-room-browser
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 依存パッケージをインストール
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: ログ・データフォルダを作成
+        run: mkdir -p logs data
+
+      - name: クッキーをSecretsから復元
+        env:
+          RAKUTEN_COOKIES: ${{ secrets.RAKUTEN_COOKIES }}
+        run: |
+          printf '%s' "$RAKUTEN_COOKIES" > data/rakuten_cookies.json
+          python3 -c "import json; data=json.load(open('data/rakuten_cookies.json')); print(f'クッキー読み込み確認: {len(data)}件')"
+
+      - name: キャプション修復を実行
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CI: "true"
+        run: |
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            python fix_captions.py --fix "${{ github.event.inputs.count }}" --dry-run
+          else
+            python fix_captions.py --fix "${{ github.event.inputs.count }}"
+          fi
+
+      - name: クッキーをSecretsに更新
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -n "$GH_TOKEN" ] && [ -f data/rakuten_cookies.json ]; then
+            gh secret set RAKUTEN_COOKIES < data/rakuten_cookies.json && echo "クッキーをSecretsに更新しました" || echo "クッキー更新スキップ"
+          fi
+
+      - name: 修復結果をコミット
+        if: github.event.inputs.dry_run != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/fixed_captions.json || true
+          git diff --staged --quiet || git commit -m "キャプション修復結果 $(date +'%Y-%m-%d %H:%M')"
+          git pull --rebase origin main
+          git push
+
+      - name: ログをアップロード（確認用）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fix-captions-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 7
