@@ -418,23 +418,47 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int, it
                 await page.evaluate("document.querySelector('button.collect-btn').click()")
             logger.info("投稿ボタンクリック（完了）")
 
-            # ネットワーク処理完了まで待機（CI環境は遅いため長めに）
-            try:
-                await page.wait_for_load_state("networkidle", timeout=10000)
-            except Exception:
-                await page.wait_for_timeout(6000)
+            # 投稿処理（完了ボタンのスピナー）が終わるまで最大40秒ポーリングする。
+            # locator.is_visible() は timeout を無視して即座に返るため、自前で待つ必要がある
+            # （待たずに判定すると、実際には投稿できているのに「失敗」扱いになり履歴に残らない）。
+            success_indicators = [
+                'text=コレ！完了',
+                'text=my ROOM を見る',
+                'text="my ROOMを見る"',
+                'text="編集・削除"',
+                'a:has-text("my ROOM")',
+                'text="コレ！した"',
+                'text="コレ！しました"',
+            ]
+            already_dialog = page.locator('text=すでにコレ').first
+            outcome = None
+            matched = ""
+            waited = 0
+            for waited in range(1, 41):
+                await page.wait_for_timeout(1000)
+                try:
+                    if await already_dialog.is_visible():
+                        outcome = "duplicate"
+                        break
+                    for indicator in success_indicators:
+                        if await page.locator(indicator).first.is_visible():
+                            outcome, matched = "success", indicator
+                            break
+                    if outcome:
+                        break
+                except Exception:
+                    continue
             await page.screenshot(path="logs/after_post.png")
 
             # ページ上の全テキストをログ出力（デバッグ用）
             try:
                 page_text = await page.evaluate("() => document.body.innerText.slice(0, 500)")
-                logger.info(f"クリック後ページテキスト: {page_text[:200]}")
+                logger.info(f"クリック後ページテキスト（{waited}秒後）: {page_text[:200]}")
             except Exception:
                 pass
 
             # 「すでにコレ！している商品です」ダイアログ → 投稿済み商品
-            already_dialog = page.locator('text=すでにコレ')
-            if await already_dialog.is_visible(timeout=2000):
+            if outcome == "duplicate":
                 logger.warning("すでにコレ！済みの商品 → スキップ（履歴に記録）")
                 try:
                     await page.locator('button:has-text("OK")').first.click()
@@ -442,23 +466,9 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int, it
                     pass
                 return "duplicate"
 
-            # 投稿成功の確認：各種インジケータを確認
-            success_indicators = [
-                'text="my ROOMを見る"',
-                'text="編集・削除"',
-                'a:has-text("my ROOM")',
-                'text="コレ！した"',
-                'text="コレ！しました"',
-                '[class*="success"]',
-                '[class*="complete"]',
-            ]
-            for indicator in success_indicators:
-                try:
-                    if await page.locator(indicator).first.is_visible(timeout=2000):
-                        logger.info(f"投稿成功確認: {indicator} / URL: {page.url}")
-                        return True
-                except Exception:
-                    continue
+            if outcome == "success":
+                logger.info(f"投稿成功確認: {matched} / URL: {page.url}（{waited}秒）")
+                return True
 
             # テキストエリアが消えていれば投稿成功とみなす
             try:
