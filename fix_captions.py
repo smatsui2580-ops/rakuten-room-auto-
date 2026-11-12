@@ -282,8 +282,13 @@ async def edit_caption(page: Page, username: str, collect: dict, caption: str, a
         return "dry_run"
 
     await page.wait_for_timeout(action_delay * 1000)
-    done_btn = page.locator('button.collect-btn, button:has-text("完了")').first
-    if not await done_btn.is_visible(timeout=3000):
+    # 編集画面には「完了」ボタンが2つある（通常モード用は ng-hide で非表示）ので、表示中のものだけを対象にする
+    done_btn = page.locator('button.collect-btn:visible, button:has-text("完了"):visible').first
+    try:
+        visible = await done_btn.is_visible(timeout=3000)
+    except Exception:
+        visible = False
+    if not visible:
         logger.warning("「完了」ボタンが見つかりません")
         await page.screenshot(path="logs/fix_failed.png")
         return "failed"
@@ -291,7 +296,10 @@ async def edit_caption(page: Page, username: str, collect: dict, caption: str, a
     try:
         await done_btn.click(force=True)
     except Exception:
-        await page.evaluate("document.querySelector('button.collect-btn').click()")
+        await page.evaluate("""() => {
+            const btns = [...document.querySelectorAll('button.collect-btn')].filter(b => b.offsetParent !== null);
+            if (btns.length) btns[btns.length - 1].click();
+        }""")
     logger.info("「完了」をクリック")
 
     indicators = ['text=編集完了', 'text=コレ！完了', 'text=my ROOM を見る', 'a:has-text("my ROOM")']
