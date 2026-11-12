@@ -8,6 +8,7 @@ Playwrightで楽天ROOMに投稿するモジュール
 """
 
 import json
+import re
 import logging
 import os
 from pathlib import Path
@@ -59,6 +60,7 @@ async def post_to_room(
     action_delay: int = 2,
     headless: bool = False,
     _auto_login_retry: bool = False,
+    item_name: str = "",
 ) -> bool:
     """楽天ROOMに商品を投稿する"""
 
@@ -150,9 +152,10 @@ async def post_to_room(
                     action_delay=action_delay,
                     headless=headless,
                     _auto_login_retry=True,
+                    item_name=item_name,
                 )
 
-            posted = await _fill_caption_and_post(page, caption, action_delay)
+            posted = await _fill_caption_and_post(page, caption, action_delay, item_name=item_name)
 
             if posted:
                 await _save_cookies(context)
@@ -195,13 +198,55 @@ async def _find_room_button(page: Page):
     return None
 
 
-async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) -> bool:
+async def _wait_for_form_loaded(page: Page, item_name: str = "", max_wait_sec: int = 45) -> bool:
+    """投稿フォームに商品情報（商品名・画像）が読み込まれるまで待つ。
+
+    商品データが届く前にキャプションを入力すると、到着時の AngularJS 再描画で
+    モデルが空に戻り、「完了」を押してもキャプション無しの コレ！ になる
+    （2026-11-11 調査: CI では読み込みに 5 秒以上かかることが多い）。
+    """
+    key = re.sub(r"\s+", "", (item_name or ""))[:8]
+    prev_text = None
+    stable = 0
+    for sec in range(max_wait_sec):
+        try:
+            text = await page.evaluate("() => document.body.innerText")
+        except Exception:
+            text = ""
+        compact = re.sub(r"\s+", "", text)
+        if key and key in compact:
+            logger.info(f"フォーム読み込み完了（商品名を検出・{sec}秒）")
+            await page.wait_for_timeout(1500)
+            return True
+        stable = stable + 1 if text == prev_text else 0
+        prev_text = text
+        # 商品名が照合できない場合は、本文が5秒間変化しなくなった時点で読み込み済みとみなす
+        if not key and stable >= 5:
+            logger.info(f"フォーム読み込み完了（本文安定・{sec}秒）")
+            return True
+        await page.wait_for_timeout(1000)
+    logger.warning(f"フォーム読み込み待ちタイムアウト（{max_wait_sec}秒）→ そのまま続行")
+    return False
+
+
+async def _caption_counter(page: Page):
+    """フォーム右上の「N / 500」カウンター（Angular モデルの文字数）を読む。見つからなければ None"""
+    try:
+        text = await page.evaluate("() => document.body.innerText")
+        m = re.search(r"(\d+)\s*/\s*500", text)
+        return int(m.group(1)) if m else None
+    except Exception:
+        return None
+
+
+async def _fill_caption_and_post(page: Page, caption: str, action_delay: int, item_name: str = "") -> bool:
     """キャプションを入力して投稿する"""
     try:
         await page.wait_for_load_state("networkidle", timeout=10000)
     except Exception:
         pass
     await page.wait_for_timeout(5000)  # Angular描画待ち
+    await _wait_for_form_loaded(page, item_name)
 
     await page.screenshot(path="logs/before_fill.png")
     logger.info(f"入力前 URL: {page.url}")
@@ -338,6 +383,25 @@ async def _fill_caption_and_post(page: Page, caption: str, action_delay: int) ->
         await page.screenshot(path="logs/fill_failed.png")
         return False
 
+    # 入力が Angular モデルに反映され、再描画で消えていないかを確認（消えていれば再入力）
+    for attempt in range(1, 4):
+        await page.wait_for_timeout(2500)
+        actual_value = await textarea.input_value()
+        counter = await _caption_counter(page)
+        if len(actual_value) > 0 and (counter is None or counter > 0):
+            logger.info(f"キャプション反映確認: value {len(actual_value)}文字 / カウンター {counter}")
+            break
+        logger.warning(f"キャプションが消えている（value {len(actual_value)}文字 / カウンター {counter}）→ 再入力 {attempt}/3")
+        await textarea.click()
+        await textarea.fill("")
+        await textarea.press_sequentially(caption, delay=5)
+        await textarea.press("Tab")
+    else:
+        logger.warning("キャプションを3回入れ直しても反映されない → この商品は投稿しない")
+        await page.screenshot(path="logs/fill_failed.png")
+        return False
+
+    await page.screenshot(path="logs/after_fill.png")
     await page.wait_for_timeout(action_delay * 1000)
 
     # 「完了」ボタンをクリック → これが投稿ボタン（キャプション入力済みの場合）

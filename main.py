@@ -119,6 +119,7 @@ def run_auto_post(config: dict, test_mode: bool = False, skip_follow: bool = Fal
                 item_url=item.item_url,
                 caption=caption,
                 item_code=item.item_code,
+                item_name=item.item_name,
                 action_delay=browser_cfg["action_delay"],
                 headless=headless,
             ))
