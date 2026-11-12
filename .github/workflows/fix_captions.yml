@@ -1,6 +1,13 @@
 name: 楽天ROOM キャプション修復（既存投稿）
 
 on:
+  # 本文なし投稿（2026-11-12 時点で 937 件）を 1 日 3 回 × 40 件ずつ消化する。
+  # 投稿（09/11/13/15/17/20 JST）・フォロー（10/14/18/22 JST）と重ならない時間帯。
+  # 残りが 0 になったら対象なしで即終了するので、消し忘れても害はない。
+  schedule:
+    - cron: '30 14 * * *'   # 23:30 JST
+    - cron: '0 17 * * *'    # 02:00 JST
+    - cron: '0 20 * * *'    # 05:00 JST
   workflow_dispatch:
     inputs:
       count:
@@ -49,11 +56,13 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CI: "true"
+          COUNT: ${{ github.event.inputs.count || '40' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         run: |
-          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
-            python fix_captions.py --fix "${{ github.event.inputs.count }}" --dry-run
+          if [ "$DRY_RUN" = "true" ]; then
+            python fix_captions.py --fix "$COUNT" --dry-run
           else
-            python fix_captions.py --fix "${{ github.event.inputs.count }}"
+            python fix_captions.py --fix "$COUNT"
           fi
 
       - name: クッキーをSecretsに更新
