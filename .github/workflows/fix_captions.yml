@@ -75,13 +75,30 @@ jobs:
 
       - name: 修復結果をコミット
         if: github.event.inputs.dry_run != 'true'
+        # 前の回とタイミングが重なると data/fixed_captions.json が衝突するので、
+        # リモートの最新版と結合（和集合）してからコミットする。失敗したら3回までやり直す
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/fixed_captions.json || true
-          git diff --staged --quiet || git commit -m "キャプション修復結果 $(date +'%Y-%m-%d %H:%M')"
-          git pull --rebase origin main
-          git push
+          cp data/fixed_captions.json /tmp/local_results.json
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git reset -q --hard origin/main
+            python3 - <<'PY'
+          import json, pathlib
+          p = pathlib.Path("data/fixed_captions.json")
+          remote = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+          local = json.loads(pathlib.Path("/tmp/local_results.json").read_text(encoding="utf-8"))
+          remote.update(local)
+          p.write_text(json.dumps(remote, ensure_ascii=False, indent=2), encoding="utf-8")
+          print(f"結合後 {len(remote)} 件")
+          PY
+            git add data/fixed_captions.json
+            if git diff --staged --quiet; then echo "変更なし"; break; fi
+            git commit -m "キャプション修復結果 $(date +'%Y-%m-%d %H:%M')"
+            if git push origin HEAD:main; then echo "プッシュ成功"; break; fi
+            echo "プッシュ失敗（$attempt/3）→ やり直し"; sleep 10
+          done
 
       - name: ログをアップロード（確認用）
         if: always()
