@@ -23,6 +23,7 @@ from src.rakuten_api import RakutenAPI
 from src.caption_generator import CaptionGenerator
 from src.room_poster import post_to_room
 from src.room_follower import run_auto_follow
+from src.room_liker import run_auto_like
 from src import history
 
 # ロギング設定
@@ -161,6 +162,24 @@ def run_auto_post(config: dict, test_mode: bool = False, skip_follow: bool = Fal
         os.system("pmset sleepnow")
 
 
+def run_like(config: dict):
+    """自動いいね（ランク条件の「検索」「いいね」を満たすための少量いいね）"""
+    like_cfg = config.get("like", {})
+    if not like_cfg.get("enabled", False):
+        return
+    browser_cfg = config["browser"]
+    headless = True if os.getenv("CI") == "true" else browser_cfg["headless"]
+    logger.info("--- 自動いいね開始 ---")
+    liked = asyncio.run(run_auto_like(
+        my_room_user_id=config["follow"]["my_room_user_id"],
+        search_keywords=like_cfg.get("search_keywords") or config["search"]["keywords"],
+        max_likes=like_cfg.get("max_likes", 5),
+        action_delay=browser_cfg["action_delay"],
+        headless=headless,
+    ))
+    logger.info(f"自動いいね完了: {liked}件")
+
+
 def run_follow_only(config: dict):
     """フォローのみ実行"""
     load_dotenv()
@@ -179,6 +198,7 @@ def run_follow_only(config: dict):
         refollow_days=follow_cfg.get("refollow_days", 30),
     ))
     logger.info(f"自動フォロー完了: {followed}件")
+    run_like(config)
     logger.info("=" * 50)
 
 
@@ -190,10 +210,14 @@ def main():
     test_mode = "--test" in args
     post_only = "--post" in args
     follow_only = "--follow" in args
-    run_now = "--now" in args or test_mode or post_only or follow_only
+    like_only = "--like" in args
+    run_now = "--now" in args or test_mode or post_only or follow_only or like_only
 
     if run_now:
-        if follow_only:
+        if like_only:
+            logger.info("いいねのみモード")
+            run_like(config)
+        elif follow_only:
             logger.info("フォローのみモード")
             run_follow_only(config)
         elif post_only:
