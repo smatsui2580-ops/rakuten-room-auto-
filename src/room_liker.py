@@ -75,10 +75,11 @@ async def _like_cards_on_page(page: Page, my_room_user_id: str, history: dict, r
     cards = await page.evaluate("""(myId) => {
         const out = [];
         document.querySelectorAll('a.icon-like.right').forEach((btn, i) => {
-            const card = btn.closest('.item-new-holder, .item, li, .slot') || btn.parentElement;
-            const owner = card ? card.querySelector('a[href*="/items"]') : null;
+            // ボタン自体が <li> の中にあるので、li を含めるとカードではなくボタンの枠を掴んでしまう
+            const card = btn.closest('.item-new-holder, .slot');
+            const owner = card ? card.querySelector('.owner a[href]') : null;
             const ownerId = owner ? (owner.getAttribute('href') || '').replace(/^\\//, '').split('/')[0] : '';
-            const img = card ? card.querySelector('img.image, img') : null;
+            const img = card ? card.querySelector('img.image') : null;
             const name = (img && img.alt) ? img.alt.slice(0, 60) : '';
             const src = img ? (img.getAttribute('src') || '') : '';
             const cls = btn.className || '';
@@ -129,7 +130,11 @@ async def _like_cards_on_page(page: Page, my_room_user_id: str, history: dict, r
 async def _capture_rank(page: Page, my_room_user_id: str):
     """my ROOM のプロフィールからランク表示を記録する（確認用）"""
     try:
-        await page.goto(f"https://room.rakuten.co.jp/{my_room_user_id}/profile", wait_until="domcontentloaded", timeout=60000)
+        await page.goto(f"https://room.rakuten.co.jp/{my_room_user_id}/items", wait_until="domcontentloaded", timeout=60000)
+        try:
+            await page.wait_for_load_state("networkidle", timeout=20000)
+        except Exception:
+            pass
         await page.wait_for_timeout(4000)
         await page.screenshot(path="logs/rank_profile.png")
         info = await page.evaluate("""() => {
