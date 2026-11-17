@@ -7,6 +7,11 @@ on:
     - cron: '0 9 * * *'    # 18:00 JST
     - cron: '0 13 * * *'   # 22:00 JST
   workflow_dispatch:
+    inputs:
+      like_only:
+        description: 'true ならフォローを飛ばして、いいねだけ実行する'
+        required: false
+        default: 'false'
 
 jobs:
   follow:
@@ -44,7 +49,12 @@ jobs:
           RAKUTEN_EMAIL: ${{ secrets.RAKUTEN_EMAIL }}
           RAKUTEN_PASSWORD: ${{ secrets.RAKUTEN_PASSWORD }}
           CI: "true"
-        run: python main.py --follow
+        run: |
+          if [ "${{ github.event.inputs.like_only }}" = "true" ]; then
+            python main.py --like
+          else
+            python main.py --follow
+          fi
 
       - name: クッキーをSecretsに更新（自動ログイン後に更新された場合）
         env:
