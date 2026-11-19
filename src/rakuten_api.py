@@ -32,6 +32,24 @@ class RakutenItem:
     review_average: float
     catch_copy: str
     item_caption: str
+    # 商品選び用の追加情報（APIから取れた時だけ入る）
+    point_rate: int = 1          # ポイント倍率（1=通常）
+    affiliate_rate: float = 0.0  # アフィリエイト料率（%）
+    postage_free: bool = False   # 送料込みかどうか
+
+
+def _to_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_float(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 class RakutenAPI:
@@ -52,10 +70,15 @@ class RakutenAPI:
         min_review_count: int = 0,
         min_review_average: float = 0.0,
         sort: str = "-reviewCount",
+        page: Optional[int] = None,
     ) -> list[RakutenItem]:
-        """楽天市場で商品を検索。API失敗時はPlaywrightブラウザにフォールバック"""
+        """楽天市場で商品を検索。API失敗時はPlaywrightブラウザにフォールバック
 
-        result = self._search_via_api(keyword, hits, min_price, max_price, min_review_count, min_review_average, sort)
+        page を指定するとそのページを取る（1ページ目＝その検索の上位商品）。
+        省略時は従来どおり1〜3ページからランダム。
+        """
+
+        result = self._search_via_api(keyword, hits, min_price, max_price, min_review_count, min_review_average, sort, page)
         if result:
             return result
 
@@ -71,8 +94,10 @@ class RakutenAPI:
         min_review_count: int,
         min_review_average: float,
         sort: str,
+        page: Optional[int] = None,
     ) -> list[RakutenItem]:
-        page = random.randint(1, 3)
+        if page is None:
+            page = random.randint(1, 3)
         params = {
             "format": "json",
             "keyword": keyword,
@@ -141,6 +166,9 @@ class RakutenAPI:
                 review_average=review_average,
                 catch_copy=item_data.get("catchcopy", ""),
                 item_caption=item_data.get("itemCaption", "")[:300],
+                point_rate=_to_int(item_data.get("pointRate"), 1),
+                affiliate_rate=_to_float(item_data.get("affiliateRate"), 0.0),
+                postage_free=str(item_data.get("postageFlag", "1")) == "0",
             ))
 
             if len(items) >= hits:

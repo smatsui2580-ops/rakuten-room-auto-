@@ -12,6 +12,7 @@ import logging
 import os
 import random
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from src.room_poster import post_to_room
 from src.room_follower import run_auto_follow
 from src.room_liker import run_auto_like
 from src import history
+from src import selector
 
 # ロギング設定
 logging.basicConfig(
@@ -72,68 +74,116 @@ def run_auto_post(config: dict, test_mode: bool = False, skip_follow: bool = Fal
     posting_cfg = config["posting"]
     browser_cfg = config["browser"]
 
-    posted_count = 0
-    max_posts = posting_cfg["max_posts_per_day"]
+    state = selector.load_state()
+    headless = True if os.getenv("CI") == "true" else browser_cfg["headless"]
 
-    # 毎回同じ先頭キーワードから消費しないよう、順番をシャッフルする
-    keywords = list(search_cfg["keywords"])
-    random.shuffle(keywords)
+    # 季節のキーワード（今月の分）を通常のキーワードに混ぜ、最近使ったものは後ろへ回す
+    month = selector.today_jst().month
+    seasonal = (search_cfg.get("seasonal_keywords") or {}).get(month, [])
+    keywords = selector.order_keywords(list(search_cfg["keywords"]), list(seasonal), state)
+
+    # セール判定その1: 5と0のつく日／config で指定した期間
+    point_day = selector.is_point_day()
+    sale_mode = point_day or selector.in_sale_period(posting_cfg.get("sale_periods"))
+    sale_checked = False
+
+    normal_posts = posting_cfg.get("posts_per_run", posting_cfg.get("max_posts_per_day", 1))
+    sale_posts = posting_cfg.get("sale_posts_per_run", normal_posts)
+    max_posts = sale_posts if sale_mode else normal_posts
+    gap_minutes = posting_cfg.get("gap_minutes", [20, 30])
+    max_pages = search_cfg.get("max_pages", 3)
+
+    posted_count = 0
+
+    def is_posted(code: str) -> bool:
+        return history.is_already_posted(code, posting_cfg["repost_interval_days"])
 
     for keyword in keywords:
         if posted_count >= max_posts:
-            logger.info(f"本日の投稿上限 {max_posts}件 に達しました")
             break
 
-        items = rakuten_api.search_items(
-            keyword=keyword,
-            hits=search_cfg["items_per_search"],
-            min_price=search_cfg.get("min_price"),
-            max_price=search_cfg.get("max_price"),
-            min_review_count=search_cfg.get("min_review_count", 0),
-            min_review_average=search_cfg.get("min_review_average", 0.0),
-            sort=search_cfg.get("sort", "-reviewCount"),
-        )
-
-        for item in items:
-            if posted_count >= max_posts:
+        # 検索の上位（1ページ目）から順に見て、未投稿の候補が出るまでページを進める
+        item = None
+        for page in range(1, max_pages + 1):
+            items = rakuten_api.search_items(
+                keyword=keyword,
+                hits=30,
+                min_price=search_cfg.get("min_price"),
+                max_price=search_cfg.get("max_price"),
+                min_review_count=search_cfg.get("min_review_count", 0),
+                min_review_average=search_cfg.get("min_review_average", 0.0),
+                sort=search_cfg.get("sort", "standard"),
+                page=page,
+            )
+            if not items:
                 break
 
-            # 重複チェック
-            if history.is_already_posted(item.item_code, posting_cfg["repost_interval_days"]):
-                logger.info(f"スキップ（投稿済み）: {item.item_name[:30]}...")
-                continue
+            # セール判定その2: 検索結果の商品名にセールの語が多ければ開催中とみなす（初回だけ判定）
+            if not sale_checked:
+                sale_checked = True
+                ratio = selector.sale_word_ratio(items)
+                logger.info(f"セール語の割合: {ratio:.0%}（5と0のつく日: {point_day}）")
+                if not sale_mode and ratio >= posting_cfg.get("sale_word_threshold", 0.2):
+                    sale_mode = True
+                    max_posts = sale_posts
+                logger.info(f"セールモード: {sale_mode} → 今回の投稿数 {max_posts}件")
 
-            # キャプション生成
-            caption = caption_gen.generate(item)
-            logger.info(f"\n【投稿予定】\n商品: {item.item_name[:50]}\n価格: ¥{item.item_price:,}\nキャプション:\n{caption}\n")
+            item = selector.pick_best(items, sale_mode, is_posted, state.get("recent_shops", []))
+            if item:
+                break
+            logger.info(f"「{keyword}」{page}ページ目は全て投稿済み → 次のページへ")
 
-            if test_mode:
-                logger.info("[テストモード] ブラウザ投稿はスキップします")
-                history.mark_as_posted(item.item_code)
-                posted_count += 1
-                continue
+        if not item:
+            logger.info(f"「{keyword}」は候補なし → 次のキーワードへ")
+            continue
 
-            # ROOM投稿
-            # CI環境（GitHub Actions）では強制headless
-            headless = True if os.getenv("CI") == "true" else browser_cfg["headless"]
-            success = asyncio.run(post_to_room(
-                item_url=item.item_url,
-                caption=caption,
-                item_code=item.item_code,
-                item_name=item.item_name,
-                action_delay=browser_cfg["action_delay"],
-                headless=headless,
-            ))
+        # 2件目以降は間隔を空ける（同じ時刻に連投するとフィードが埋まり、読まれにくい）
+        if posted_count > 0 and not test_mode and os.getenv("CI") == "true":
+            wait_min = random.uniform(gap_minutes[0], gap_minutes[1])
+            logger.info(f"次の投稿まで {wait_min:.0f}分 待機")
+            time.sleep(wait_min * 60)
 
-            if success is True:
-                history.mark_as_posted(item.item_code)
-                posted_count += 1
-                logger.info(f"投稿成功 ({posted_count}/{max_posts})")
-            elif success == "duplicate":
-                history.mark_as_posted(item.item_code)
-                logger.info(f"重複のため履歴に記録してスキップ: {item.item_name[:30]}...")
-            else:
-                logger.warning(f"投稿失敗: {item.item_name[:30]}...")
+        # キャプション生成（書き出しの型を毎回変える）
+        style_name, style_desc = selector.pick_opening_style(state)
+        sale_note = "5と0のつく日" if point_day else ""
+        caption = caption_gen.generate(
+            item,
+            opening_style=style_desc,
+            avoid_openings=state.get("recent_openings", []),
+            sale_note=sale_note,
+        )
+        logger.info(
+            f"\n【投稿予定】キーワード: {keyword} / 書き出し: {style_name}\n"
+            f"商品: {item.item_name[:50]}\n価格: ¥{item.item_price:,} / レビュー {item.review_average}点 {item.review_count}件"
+            f" / ポイント{item.point_rate}倍 / 点数 {selector.score_item(item, sale_mode):.1f}\n"
+            f"キャプション:\n{caption}\n"
+        )
+
+        if test_mode:
+            logger.info("[テストモード] ブラウザ投稿はスキップします")
+            posted_count += 1
+            state.setdefault("recent_keywords", []).append(keyword)
+            continue
+
+        success = asyncio.run(post_to_room(
+            item_url=item.item_url,
+            caption=caption,
+            item_code=item.item_code,
+            item_name=item.item_name,
+            action_delay=browser_cfg["action_delay"],
+            headless=headless,
+        ))
+
+        if success is True:
+            history.mark_as_posted(item.item_code)
+            selector.record_post(state, keyword, item.shop_name, style_name, caption)
+            posted_count += 1
+            logger.info(f"投稿成功 ({posted_count}/{max_posts})")
+        elif success == "duplicate":
+            history.mark_as_posted(item.item_code)
+            logger.info(f"重複のため履歴に記録してスキップ: {item.item_name[:30]}...")
+        else:
+            logger.warning(f"投稿失敗: {item.item_name[:30]}...")
 
     logger.info(f"自動投稿完了: {posted_count}件投稿")
 
@@ -141,7 +191,6 @@ def run_auto_post(config: dict, test_mode: bool = False, skip_follow: bool = Fal
     follow_cfg = config.get("follow", {})
     if not skip_follow and follow_cfg.get("enabled", False):
         logger.info("--- 自動フォロー開始 ---")
-        headless = True if os.getenv("CI") == "true" else browser_cfg["headless"]
         followed = asyncio.run(run_auto_follow(
             my_room_user_id=follow_cfg["my_room_user_id"],
             search_keywords=follow_cfg.get("search_keywords", search_cfg["keywords"]),
@@ -157,7 +206,6 @@ def run_auto_post(config: dict, test_mode: bool = False, skip_follow: bool = Fal
     # スケジューラー実行時（CI以外）は投稿後にスリープ
     if not test_mode and os.getenv("CI") != "true" and "--now" not in sys.argv:
         logger.info("投稿完了 → 5分後にスリープします")
-        import time
         time.sleep(300)
         os.system("pmset sleepnow")
 

@@ -2,12 +2,16 @@ name: 楽天ROOM自動投稿
 
 on:
   schedule:
+    # 1回1件ずつ（セール時は2件）。同じ時刻の連投を避けて1日9回に分散
+    - cron: '0 22 * * *'   # 07:00 JST
     - cron: '0 0 * * *'    # 09:00 JST
     - cron: '0 2 * * *'    # 11:00 JST
     - cron: '0 4 * * *'    # 13:00 JST
     - cron: '0 6 * * *'    # 15:00 JST
     - cron: '0 8 * * *'    # 17:00 JST
-    - cron: '0 11 * * *'   # 20:00 JST
+    - cron: '0 10 * * *'   # 19:00 JST
+    - cron: '0 12 * * *'   # 21:00 JST
+    - cron: '30 13 * * *'  # 22:30 JST
   workflow_dispatch:
 
 jobs:
@@ -41,7 +45,7 @@ jobs:
           printf '%s' "$RAKUTEN_COOKIES" > data/rakuten_cookies.json
           python3 -c "import json; data=json.load(open('data/rakuten_cookies.json')); print(f'クッキー読み込み確認: {len(data)}件')"
 
-      - name: 自動投稿を実行（4件）
+      - name: 自動投稿を実行
         env:
           RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
           RAKUTEN_ACCESS_KEY: ${{ secrets.RAKUTEN_ACCESS_KEY }}
@@ -69,6 +73,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/posted_items.json || true
+          [ -f data/post_state.json ] && git add data/post_state.json || true
           git diff --staged --quiet || git commit -m "投稿履歴更新 $(date +'%Y-%m-%d %H:%M')"
           git pull --rebase origin main
           git push
