@@ -1,0 +1,81 @@
+name: 楽天ROOMコレクション作成・更新
+
+on:
+  schedule:
+    - cron: '0 18 * * 0'   # 毎週月曜 03:00 JST（新しい投稿をコレクションに追加）
+  workflow_dispatch:
+    inputs:
+      create:
+        description: '新しく作るコレクションの最大数'
+        required: false
+        default: '10'
+      update:
+        description: 'true なら作成済みのコレクションに新しい投稿を追加する'
+        required: false
+        default: 'true'
+
+concurrency:
+  group: rakuten-room-collections
+  cancel-in-progress: false
+
+jobs:
+  collections:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 依存パッケージをインストール
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: ログ・データフォルダを作成
+        run: mkdir -p logs data
+
+      - name: クッキーをSecretsから復元
+        env:
+          RAKUTEN_COOKIES: ${{ secrets.RAKUTEN_COOKIES }}
+        run: |
+          printf '%s' "$RAKUTEN_COOKIES" > data/rakuten_cookies.json
+          python3 -c "import json; data=json.load(open('data/rakuten_cookies.json')); print(f'クッキー読み込み確認: {len(data)}件')"
+
+      - name: コレクションを作成・更新
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CI: "true"
+        run: |
+          CREATE="${{ github.event.inputs.create }}"
+          UPDATE="${{ github.event.inputs.update }}"
+          ARGS="--create ${CREATE:-10}"
+          if [ "${UPDATE:-true}" = "true" ]; then ARGS="$ARGS --update"; fi
+          python make_collections.py $ARGS
+
+      - name: 記録をコミット
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          [ -f data/collections.json ] && git add data/collections.json || true
+          [ -f data/collection_judgements.json ] && git add data/collection_judgements.json || true
+          git diff --staged --quiet || git commit -m "コレクション記録更新 $(date +'%Y-%m-%d %H:%M')"
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push && break
+            sleep 10
+          done
+
+      - name: ログをアップロード（確認用）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: collections-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 7
